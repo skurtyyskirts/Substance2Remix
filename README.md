@@ -1,83 +1,109 @@
-    # Substance Painter <> RTX Remix Connector
+# Substance2Remix 
 
-    This Python script acts as a plugin for Adobe Substance 3D Painter, facilitating a workflow connection with the NVIDIA RTX Remix Toolkit/Runtime. It allows users to:
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-    *   **Pull Assets:** Create a new Painter project based on the currently selected mesh and material in RTX Remix.
-    *   **Import Textures:** Automatically import textures associated with the linked Remix material into the Painter project (includes DDS -> PNG conversion).
-    *   **Push Textures:** Export textures from Painter and update the linked material in RTX Remix via the Remix API.
+This Python plugin (Version 0.1 - Expect bugs!) helps bridge Painter and the Remix Toolkit/Runtime, aiming to make the process faster and more efficient.
 
-    **Features:**
+---
 
-    *   Links Painter projects to specific Remix materials via metadata.
-    *   Resolves relative mesh/texture paths from Remix using project structure context.
-    *   Uses `texconv.exe` for DDS to PNG conversion on import (with fallback to direct DDS).
-    *   Programmatic texture export from Painter based on configured settings.
-    *   Texture ingestion and material updates via the RTX Remix HTTP API.
-    *   Dynamic discovery of target USD material attributes during push.
-    *   Configurable settings within the `core.py` script.
+## What Does It Do?
 
-    **Requirements:**
+This plugin connects Painter and Remix for key operations:
 
-    *   **Software:**
-        *   Adobe Substance 3D Painter 
-        *   NVIDIA RTX Remix Toolkit/Runtime (with the HTTP API enabled at `http://localhost:8011`)
-        *   Python 3.x (as provided by Substance Painter)
-    *   **Python Libraries:**
-        *   `Pillow`: For potential image operations.
-        *   `requests`: For communicating with the Remix API.
-    *   **External Tools:**
-        *   `texconv.exe`: From the [Microsoft DirectXTex library](https://github.com/microsoft/DirectXTex). Required for DDS conversion during texture import.
+* **🚀 Pull Assets:** Instantly grab the selected mesh/material from Remix and set up a new, linked project in Painter.
+* **🖼️ Import Textures:** Automatically fetch textures from Remix, convert `.dds` files to `.png` (using `texconv.exe`), and import them into your Painter project shelf. It also attempts assignment to the correct channels. *(View imported textures under Assets > Your Project)*
+* **➡️ Push Textures:** Export your work (using a PBR Metallic Roughness profile), send it to Remix for ingestion (conversion back to `.dds`), dynamically update the linked material, and trigger a save in Remix.
 
-    **Installation:**
+---
 
-    1.  **Place the Script:** Copy the `core.py` file into your Substance Painter Python plugins directory. You can typically find this via `Painter > Python > Plugins Folder`.
-    2.  **Install Python Libraries:**
-        *   The script will log instructions if `Pillow` or `requests` are missing when Painter starts.
-        *   You need to install them into Painter's specific Python environment. Open a Command Prompt (cmd) and run the commands similar to those logged by the script (adjust paths as necessary):
-            ```bash
-            # Find Painter's python.exe (e.g., C:\Program Files\Adobe\Adobe Substance 3D Painter\resources\pythonsdk\python.exe)
-            "<path_to_painter_python.exe>" -m pip install --upgrade --target="<path_to_painter_python_site-packages>" Pillow requests
-            ```
-        *   Restart Substance Painter after installation.
-    3.  **Install `texconv.exe`:**
-        *   Download or build the [DirectXTex library](https://github.com/microsoft/DirectXTex).
-        *   Locate `texconv.exe` (often found in a `bin` subfolder after building or downloading releases).
-        *   Copy `texconv.exe` to a location of your choice.
-    4.  **Configure the Script:**
-        *   Open `core.py` in a text editor.
-        *   Modify the `PLUGIN_SETTINGS` dictionary near the top:
-            *   `"texconv_path"`: Set this to the **full, absolute path** where you placed `texconv.exe`. (e.g., `"C:\\Tools\\DirectXTex\\texconv.exe"`)
-            *   `"painter_export_path"`: Set the directory where Painter should export textures *to* during the Push action.
-            *   `"painter_import_template_path"` (Optional): Path to an `.spt` template to use when creating projects via the Pull action.
-            *   Review other settings like `"api_base_url"`, `"remix_output_subfolder"`, etc.
+## Core Features
 
-    **Usage:**
+* **🔗 Direct Linking:** Keeps Painter projects tied to specific Remix materials via metadata.
+* **🗺️ Smart Path Finding:** Resolves relative mesh/texture paths provided by Remix.
+* **🔄 DDS <-> PNG Conversion:** Handles `.dds` conversion using `texconv.exe` (with fallback).
+* **⚙️ Controlled Export:** Exports textures based on configurable settings (Defaults to PBR Metallic Roughness).
+* **📡 API Integration:** Communicates directly with the RTX Remix Toolkit API.
+* **🎯 Dynamic Updates:** Finds the correct material inputs in Remix automatically during push.
+* **🔧 Configurable:** Key settings are editable within the `core.py` script.
 
-    1.  **Link Asset (Pull):**
-        *   In RTX Remix, select the *mesh* and/or *material* prim you want to work on.
-        *   In Substance Painter, go to `Python > RemixConnector > Pull Selected Remix Asset`.
-        *   This creates a new Painter project using the selected mesh and stores a link to the Remix material.
-    2.  **Import Textures:**
-        *   With the linked project open in Painter, go to `Python > RemixConnector > Import Textures`.
-        *   The script queries Remix for textures linked to the material, converts DDS files to PNG (using `texconv.exe`), imports them into Painter, and attempts to assign them to the correct channels.
-        *   *(Note: Automatic channel assignment requires a compatible Painter API version).*
-    3.  **Work in Painter:**
-        *   Edit your textures as desired.
-    4.  **Update Remix (Push):**
-        *   When ready, go to `Python > RemixConnector > Push Textures to Remix`.
-        *   The script exports textures (as PNGs) based on `PLUGIN_SETTINGS`, ingests them into Remix via the API (converting them back to DDS/RTEX.DDS), discovers the correct material attributes dynamically, updates the material inputs, and requests Remix to save the changes.
+---
 
-    **Dependencies and Credits:**
+## Getting Started
 
-    This script utilizes several open-source libraries and relies on specific software APIs.
+Ready to integrate? Here’s how to set it up:
 
-    *   **Python:** ([Python Software Foundation License](https://docs.python.org/3/license.html)) - The core language.
-    *   **Pillow:** ([HPND License](https://github.com/python-pillow/Pillow/blob/main/LICENSE)) - Used for image handling. Project: [python-pillow/Pillow](https://github.com/python-pillow/Pillow)
-    *   **requests:** ([Apache License 2.0](https://github.com/psf/requests/blob/main/LICENSE)) - Used for HTTP API communication. Project: [psf/requests](https://github.com/psf/requests)
-    *   **DirectXTex (`texconv.exe`):** ([MIT License](https://github.com/microsoft/DirectXTex/blob/main/LICENSE)) - Used for DDS texture conversion. Project: [microsoft/DirectXTex](https://github.com/microsoft/DirectXTex)
-    *   **Substance Painter API:** Provided by Adobe. Usage subject to Adobe's terms.
-    *   **RTX Remix API:** Provided by NVIDIA. Usage subject to NVIDIA's terms.
+1.  **Grab `core.py`:** Download the script file from this repository. Optionally, download `requirements.txt`.
+2.  **Add to Painter:** ✅
+    * In Painter: `Python` > `Plugins Folder`.
+    * Drop `core.py` into that folder.
+3.  **Install Python Dependencies (`Pillow` & `requests`):**
+    * The necessary Python packages are listed in `requirements.txt`.
+    * **Recommended Method:** Restart Painter. Check the `Python` > `Log` window for the exact `pip install` command needed for your setup. Run that command in a Command Prompt (cmd) or Terminal.
+        ```bash
+        # Example command from log - DO NOT COPY PASTE - Use paths from YOUR Painter Log!
+        "C:\Program Files\Adobe\Adobe Substance 3D Painter\resources\pythonsdk\python.exe" -m pip install --upgrade --target="C:\Users\YourUser\Documents\Adobe\Adobe Substance 3D Painter\python\lib\site-packages" Pillow requests
+        ```
+    * **Alternative (If you cloned the repo):** Navigate to the repo directory and run `"<path_to_painter_python.exe>" -m pip install --upgrade --target="<path_from_log>" -r requirements.txt`.
+    * **Restart Painter again!** 🔄
+4.  **Get `texconv.exe` (Required!):** 📍
+    * **Important:** `texconv.exe` is an external tool and **cannot** be installed using `pip` or `requirements.txt`. Download it manually. (`texassemble.exe` is **not** needed).
+    * Download the latest release from the official **[Microsoft DirectXTex Releases](https://github.com/microsoft/DirectXTex/releases)** page.
+    * Find `texconv.exe` inside the downloaded archive (e.g., in a `bin/x64/Release` subfolder).
+    * Copy `texconv.exe` somewhere stable on your computer (like `C:\Tools\texconv.exe`) and note the full path.
+5.  **Configure the Script:** 🔧
+    * Open `core.py` (in the plugins folder) in a text editor.
+    * Find `PLUGIN_SETTINGS` near the top.
+    * **Most Important:** Update `"texconv_path"` to the full path where you placed `texconv.exe`. Also set `"painter_export_path"` to your desired export folder. Use double backslashes (`\\`) or forward slashes (`/`). See the [detailed README](README.md) for examples.
+    * Review other settings like `"painter_import_template_path"` if needed.
 
-    **License:**
+---
 
-    This project (`RemixSubstance` connector script) is licensed under the `MIT License`. See the `LICENSE` file for details.
+## How to Use It
+
+Access the plugin via Painter's main menu: **`Python` > `RemixConnector`**
+
+1.  **Pull (Remix -> Painter):**
+    * Select a mesh instance or material in the **RTX Remix Toolkit**.
+    * In Painter: `Python` > `RemixConnector` > `Pull Selected Remix Asset`.
+    * ✨ A new Painter project is created, linked to the Remix asset.
+2.  **Import Textures:**
+    * In the new Painter project: `Python` > `RemixConnector` > `Import Textures from Remix`.
+    * 🖼️ Textures appear in your shelf (Assets > Your Project) and are hopefully assigned.
+3.  **Paint:** 🎨
+    * Perform your texturing work.
+4.  **Push (Painter -> Remix):**
+    * Ready to send back to Remix? `Python` > `RemixConnector` > `Push Textures to Remix`.
+    * 🚀 Your textures (exported using PBR Met/Rough) are sent, ingested, applied, and saved in Remix.
+
+*(Remember: This is v0.1, so please report any bugs or issues you encounter!)*
+
+---
+
+## Need Help? (Troubleshooting)
+
+Having trouble? Check the [**Detailed README**](README.md#troubleshooting) for common issues and solutions, like:
+
+* Missing Python libraries (`Pillow`, `requests`)
+* Incorrect `texconv.exe` path
+* Connection errors to Remix API
+* Path resolution problems
+* Textures not assigning automatically
+* Push/Ingest errors
+
+---
+
+## Dependencies & Thanks
+
+This relies on: Python, Pillow, requests, DirectXTex, and the APIs from Adobe and NVIDIA. Check the [**Detailed README**](README.md#dependencies-and-credits) for links and licenses.
+
+---
+
+## Contributing
+
+Got ideas or found a bug? Feel free to open an issue or submit a pull request.
+
+---
+
+## License
+
+Licensed under the **MIT License**. See `LICENSE.md` for the full text.
