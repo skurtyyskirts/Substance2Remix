@@ -1,2 +1,0 @@
-    Pillow>=9.0.0 # Or the specific version you tested with
-    requests>=2.20.0 # Or the specific version you tested with

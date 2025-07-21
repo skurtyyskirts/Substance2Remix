@@ -1,109 +1,51 @@
-# Substance2Remix 
+# RTX Remix Substance Painter Connector
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+This plugin creates a bridge between Substance Painter and NVIDIA's RTX Remix, allowing artists to easily send and receive textures between the two applications.
 
-This Python plugin (Version 0.1 - Expect bugs!) helps bridge Painter and the Remix Toolkit/Runtime, aiming to make the process faster and more efficient.
+## Features
 
----
+- **Push to Remix**: Export textures from Substance Painter and automatically ingest them into the selected Remix material.
+- **Pull from Remix**: Create a new Substance Painter project using the selected mesh from Remix, and automatically link it for future push/pull operations.
+- **Import Textures from Remix**: Pull textures from a linked material in Remix into the current Substance Painter project.
+- **Auto-Unwrap with Blender**: Optionally use Blender to automatically unwrap meshes pulled from Remix.
+- **Settings Panel**: Configure plugin settings, including paths to Blender and the 	exconv.exe utility.
 
-## What Does It Do?
+## Installation
 
-This plugin connects Painter and Remix for key operations:
+1.  Download the latest release from https://github.com/skurtyyskirts/Substance2Remix.
+2.  Locate your Substance Painter plugins directory. This is typically found in Documents\Adobe\Adobe Substance 3D Painter\python\plugins.
+3.  Copy the Substance2Painter folder into the plugins directory.
+4.  Launch Substance Painter. The plugin will be available under the Plugins > RTX Remix Connector menu.
 
-* **🚀 Pull Assets:** Instantly grab the selected mesh/material from Remix and set up a new, linked project in Painter.
-* **🖼️ Import Textures:** Automatically fetch textures from Remix, convert `.dds` files to `.png` (using `texconv.exe`), and import them into your Painter project shelf. It also attempts assignment to the correct channels. *(View imported textures under Assets > Your Project)*
-* **➡️ Push Textures:** Export your work (using a PBR Metallic Roughness profile), send it to Remix for ingestion (conversion back to `.dds`), dynamically update the linked material, and trigger a save in Remix.
+## Usage
 
----
+### Connecting to Remix
 
-## Core Features
+Before using the push/pull features, ensure that RTX Remix is running and that a project is open.
 
-* **🔗 Direct Linking:** Keeps Painter projects tied to specific Remix materials via metadata.
-* **🗺️ Smart Path Finding:** Resolves relative mesh/texture paths provided by Remix.
-* **🔄 DDS <-> PNG Conversion:** Handles `.dds` conversion using `texconv.exe` (with fallback).
-* **⚙️ Controlled Export:** Exports textures based on configurable settings (Defaults to PBR Metallic Roughness).
-* **📡 API Integration:** Communicates directly with the RTX Remix Toolkit API.
-* **🎯 Dynamic Updates:** Finds the correct material inputs in Remix automatically during push.
-* **🔧 Configurable:** Key settings are editable within the `core.py` script.
+### Pulling a Mesh from Remix
 
----
+1.  In RTX Remix, select the mesh you want to texture.
+2.  In Substance Painter, go to Plugins > RTX Remix Connector > Pull from Remix.
+3.  A new Substance Painter project will be created with the selected mesh.
 
-## Getting Started
+### Pushing Textures to Remix
 
-Ready to integrate? Here’s how to set it up:
+1.  After texturing your mesh in Substance Painter, go to Plugins > RTX Remix Connector > Push to Remix.
+2.  The plugin will export the textures and update the material in Remix.
 
-1.  **Grab `core.py`:** Download the script file from this repository. Optionally, download `requirements.txt`.
-2.  **Add to Painter:** ✅
-    * In Painter: `Python` > `Plugins Folder`.
-    * Drop `core.py` into that folder.
-3.  **Install Python Dependencies (`Pillow` & `requests`):**
-    * The necessary Python packages are listed in `requirements.txt`.
-    * **Recommended Method:** Restart Painter. Check the `Python` > `Log` window for the exact `pip install` command needed for your setup. Run that command in a Command Prompt (cmd) or Terminal.
-        ```bash
-        # Example command from log - DO NOT COPY PASTE - Use paths from YOUR Painter Log!
-        "C:\Program Files\Adobe\Adobe Substance 3D Painter\resources\pythonsdk\python.exe" -m pip install --upgrade --target="C:\Users\YourUser\Documents\Adobe\Adobe Substance 3D Painter\python\lib\site-packages" Pillow requests
-        ```
-    * **Alternative (If you cloned the repo):** Navigate to the repo directory and run `"<path_to_painter_python.exe>" -m pip install --upgrade --target="<path_from_log>" -r requirements.txt`.
-    * **Restart Painter again!** 🔄
-4.  **Get `texconv.exe` (Required!):** 📍
-    * **Important:** `texconv.exe` is an external tool and **cannot** be installed using `pip` or `requirements.txt`. Download it manually. (`texassemble.exe` is **not** needed).
-    * Download the latest release from the official **[Microsoft DirectXTex Releases](https://github.com/microsoft/DirectXTex/releases)** page.
-    * Find `texconv.exe` inside the downloaded archive (e.g., in a `bin/x64/Release` subfolder).
-    * Copy `texconv.exe` somewhere stable on your computer (like `C:\Tools\texconv.exe`) and note the full path.
-5.  **Configure the Script:** 🔧
-    * Open `core.py` (in the plugins folder) in a text editor.
-    * Find `PLUGIN_SETTINGS` near the top.
-    * **Most Important:** Update `"texconv_path"` to the full path where you placed `texconv.exe`. Also set `"painter_export_path"` to your desired export folder. Use double backslashes (`\\`) or forward slashes (`/`). See the [detailed README](README.md) for examples.
-    * Review other settings like `"painter_import_template_path"` if needed.
+### Settings
 
----
+The Settings panel (Plugins > RTX Remix Connector > Settings) allows you to configure the following:
 
-## How to Use It
-
-Access the plugin via Painter's main menu: **`Python` > `RemixConnector`**
-
-1.  **Pull (Remix -> Painter):**
-    * Select a mesh instance or material in the **RTX Remix Toolkit**.
-    * In Painter: `Python` > `RemixConnector` > `Pull Selected Remix Asset`.
-    * ✨ A new Painter project is created, linked to the Remix asset.
-2.  **Import Textures:**
-    * In the new Painter project: `Python` > `RemixConnector` > `Import Textures from Remix`.
-    * 🖼️ Textures appear in your shelf (Assets > Your Project) and are hopefully assigned.
-3.  **Paint:** 🎨
-    * Perform your texturing work.
-4.  **Push (Painter -> Remix):**
-    * Ready to send back to Remix? `Python` > `RemixConnector` > `Push Textures to Remix`.
-    * 🚀 Your textures (exported using PBR Met/Rough) are sent, ingested, applied, and saved in Remix.
-
-*(Remember: This is v0.1, so please report any bugs or issues you encounter!)*
-
----
-
-## Need Help? (Troubleshooting)
-
-Having trouble? Check the [**Detailed README**](README.md#troubleshooting) for common issues and solutions, like:
-
-* Missing Python libraries (`Pillow`, `requests`)
-* Incorrect `texconv.exe` path
-* Connection errors to Remix API
-* Path resolution problems
-* Textures not assigning automatically
-* Push/Ingest errors
-
----
-
-## Dependencies & Thanks
-
-This relies on: Python, Pillow, requests, DirectXTex, and the APIs from Adobe and NVIDIA. Check the [**Detailed README**](README.md#dependencies-and-credits) for links and licenses.
-
----
+-   **Blender Executable Path**: The path to your lender.exe file. This is required for the auto-unwrap feature.
+-   **Texconv Path**: The path to the 	exconv.exe utility. This is used to convert .dds files from Remix into a format that Substance Painter can use. A copy is included with this plugin.
+-   **Log Level**: The verbosity of the plugin's logs.
 
 ## Contributing
 
-Got ideas or found a bug? Feel free to open an issue or submit a pull request.
-
----
+Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
 
 ## License
 
-Licensed under the **MIT License**. See `LICENSE.md` for the full text.
+[MIT](https://choosealicense.com/licenses/mit/)
