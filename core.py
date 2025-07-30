@@ -303,44 +303,36 @@ class CorePlaceholderSettingsDialog(QDialog):
 
 SETTINGS_FILE_PATH = None
 def get_settings_file_path():
+    """
+    Determines the settings file path. Per user requirements, this will be
+    'settings.json' located in the same directory as this script.
+    This new version is simplified to remove all hardcoded folder and file names.
+    """
     global SETTINGS_FILE_PATH
     if SETTINGS_FILE_PATH:
         return SETTINGS_FILE_PATH
+
     try:
-        user_documents = os.path.join(os.path.expanduser("~"), "Documents")
-        settings_dir_adobe_new = os.path.join(user_documents, "Adobe", "Adobe Substance 3D Painter", "python", "plugins", "RemixConnector")
-        settings_dir_adobe_old_style = os.path.join(user_documents, "Adobe", "Adobe Substance 3D Painter", "Plugins", "RemixConnector")
-        settings_dir_allegorithmic_new = os.path.join(user_documents, "Allegorithmic", "Substance Painter", "python", "plugins", "RemixConnector")
-        settings_dir_allegorithmic_old_style = os.path.join(user_documents, "Allegorithmic", "Substance Painter", "Plugins", "RemixConnector")
-        settings_dir_generic_fallback = os.path.join(user_documents, "Substance3DPainter", "PluginSettings", "RemixConnector")
+        # This is the correct and simple logic.
+        # It finds the directory where this script (core.py) is located.
+        plugin_script_dir = os.path.dirname(os.path.abspath(__file__))
 
-        possible_plugin_dirs = [
-            settings_dir_adobe_new,
-            settings_dir_allegorithmic_new,
-            settings_dir_adobe_old_style,
-            settings_dir_allegorithmic_old_style,
-        ]
-
-        final_settings_dir = None
-        for p_dir in possible_plugin_dirs:
-            plugin_parent_dir = os.path.dirname(p_dir)
-            if os.path.isdir(plugin_parent_dir):
-                final_settings_dir = p_dir
-                break
+        # It joins that directory with the desired filename "settings.json".
+        # No new folders are created. The filename is correct.
+        final_path = os.path.join(plugin_script_dir, "settings.json")
         
-        if not final_settings_dir:
-            final_settings_dir = settings_dir_generic_fallback
-
-        if not os.path.exists(final_settings_dir):
-            os.makedirs(final_settings_dir, exist_ok=True)
-        SETTINGS_FILE_PATH = os.path.join(final_settings_dir, "remix_connector_settings.json")
+        SETTINGS_FILE_PATH = final_path
         return SETTINGS_FILE_PATH
     except Exception as e:
-        current_script_dir = os.path.dirname(os.path.abspath(__file__))
-        local_path = os.path.join(current_script_dir, "remix_connector_settings.json")
-        SETTINGS_FILE_PATH = local_path
-        print(f"[RemixConnector Core] Settings file path determination error '{e}', using local fallback: {SETTINGS_FILE_PATH}")
-        return SETTINGS_FILE_PATH
+        # This is a robust fallback in case __file__ is not available,
+        # though it's very unlikely in this context.
+        print(f"[RemixConnector Core] CRITICAL: Could not determine script directory to store settings.json: {e}")
+        # Fallback to a temp directory to avoid crashing, but this is a degraded state.
+        fallback_path = os.path.join(tempfile.gettempdir(), "remix_connector_settings_fallback.json")
+        SETTINGS_FILE_PATH = fallback_path
+        print(f"[RemixConnector Core] Using temporary fallback settings file: {fallback_path}")
+        return fallback_path
+
 
 def load_plugin_settings():
     global PLUGIN_SETTINGS
@@ -377,6 +369,27 @@ def load_plugin_settings():
         log_error(f"Error decoding JSON from {s_file_path}: {json_e}. Using default settings. Problematic file may be overwritten on save.", exc_info=True)
     except Exception as e:
         log_error(f"Error loading settings from {s_file_path}: {e}. Using default settings.", exc_info=True)
+    
+    # --- NEW: Auto-detect texconv.exe ---
+    # After loading settings, check if texconv_path is valid. If not, try to find it bundled with the plugin.
+    user_set_path = PLUGIN_SETTINGS.get("texconv_path")
+    if not user_set_path or not os.path.isfile(user_set_path):
+        if user_set_path:
+            log_warning(f"User-configured texconv.exe path is invalid: '{user_set_path}'. Attempting auto-detection.")
+        else:
+            log_info("Texconv.exe path not set. Attempting auto-detection...")
+        
+        try:
+            plugin_dir = os.path.dirname(os.path.abspath(__file__))
+            bundled_texconv_path = os.path.join(plugin_dir, "texconv.exe")
+            if os.path.isfile(bundled_texconv_path):
+                log_info(f"Auto-detected and using bundled texconv.exe: {bundled_texconv_path}")
+                PLUGIN_SETTINGS["texconv_path"] = bundled_texconv_path
+            else:
+                log_warning("Could not auto-detect 'texconv.exe' in the plugin folder. DDS import will fail.")
+        except Exception as e:
+            log_error(f"An error occurred during texconv.exe auto-detection: {e}")
+
 
 def save_plugin_settings():
     s_file_path = get_settings_file_path()
@@ -508,20 +521,17 @@ PAINTER_CHANNEL_TO_REMIX_PBR_MAP = {
     "basecolor": "albedo", "base_color": "albedo", "albedo": "albedo", "diffuse": "albedo",
     "normal": "normal", "height": "height", "displacement": "height", "roughness": "roughness",
     "metallic": "metallic", "metalness": "metallic", "emissive": "emissive", "emission": "emissive",
-    "opacity": "opacity", "ambientocclusion": "ao", "ambient_occlusion": "ao", "ao": "ao",
+    "opacity": "opacity",
 }
 REMIX_PBR_TO_PAINTER_CHANNEL_MAP = {
     "albedo": "baseColor", "normal": "normal", "height": "height", "roughness": "roughness",
-    "metallic": "metallic", "emissive": "emissive", "opacity": "opacity", "ao": "ambientOcclusion",
+    "metallic": "metallic", "emissive": "emissive", "opacity": "opacity",
 }
 
 PAINTER_STRING_TO_CHANNELTYPE_MAP = {}
-AO_CHANNEL_TYPE = None
 try:
     if 'ChannelType' in locals() and hasattr(substance_painter.textureset, 'ChannelType'):
-        # Check if it's the real or dummy class
         is_dummy_channel_type = (isinstance(ChannelType, type) and ChannelType.__name__ == 'ChannelType' and not hasattr(ChannelType, 'BaseColor'))
-
         if not is_dummy_channel_type:
             PAINTER_STRING_TO_CHANNELTYPE_MAP = {
                 "baseColor": substance_painter.textureset.ChannelType.BaseColor,
@@ -532,17 +542,9 @@ try:
                 "emissive": substance_painter.textureset.ChannelType.Emissive,
                 "opacity": substance_painter.textureset.ChannelType.Opacity,
             }
-            
-            # AO channel is special, it might not exist in all versions
-            if hasattr(substance_painter.textureset.ChannelType, 'AmbientOcclusion'):
-                PAINTER_STRING_TO_CHANNELTYPE_MAP["ambientOcclusion"] = substance_painter.textureset.ChannelType.AmbientOcclusion
-                AO_CHANNEL_TYPE = substance_painter.textureset.ChannelType.AmbientOcclusion
-            else:
-                log_warning("[RemixConnector WARN] AmbientOcclusion channel type not found in sp.textureset.ChannelType. 'ao' mapping will be unavailable.")
-
             substance_painter.logging.info("[RemixConnector Core] PAINTER_STRING_TO_CHANNELTYPE_MAP created.")
         else:
-            substance_painter.logging.error("[RemixConnector Core] Cannot create PAINTER_STRING_TO_CHANNELTYPE_MAP: ChannelType is a dummy class.")
+            substance_painter.logging.error("[RemixConnector Core] Cannot create PAINTER_STRING_TO_CHANNELTYPE_MAP: ChannelType is dummy.")
     else:
         substance_painter.logging.error("[RemixConnector Core] Cannot create PAINTER_STRING_TO_CHANNELTYPE_MAP: substance_painter.textureset.ChannelType not available.")
 except Exception as e:
@@ -572,7 +574,6 @@ PBR_TO_MDL_INPUT_MAP = {
     "metallic": "metallic_texture",
     "emissive": "emissive_mask_texture",
     "opacity": "opacity_texture",
-    "ao": "ao_texture",
 }
 
 _logger = substance_painter.logging
@@ -680,7 +681,6 @@ def convert_dds_to_png(texconv_exe, dds_file, output_png_target_name_base):
     os.makedirs(output_dir, exist_ok=True)
 
     # texconv simply replaces the last extension. e.g., "foo.rtex.dds" becomes "foo.rtex.png".
-    # The original logic was incorrectly stripping the ".rtex" part.
     base_name = os.path.splitext(safe_basename(dds_file))[0]
     expected_output_filename = base_name + ".png"
 
@@ -1382,14 +1382,15 @@ def handle_import_textures():
                 log_warning(f"  No Painter channel mapping for PBR type '{pbr_type}'. Skipping.")
                 continue
             
-            # Simplified path resolution
-            abs_tex_path = os.path.normpath(tex_path_raw) if os.path.isabs(tex_path_raw) else (os.path.normpath(os.path.join(os.path.dirname(remix_proj_dir), tex_path_raw)) if remix_proj_dir else None)
+            abs_tex_path = os.path.normpath(tex_path_raw) if os.path.isabs(tex_path_raw) else (os.path.normpath(os.path.join(remix_proj_dir, tex_path_raw)) if remix_proj_dir else None)
+            
             if not abs_tex_path or not os.path.isfile(abs_tex_path):
                 log_warning(f"    Skipping: Texture file not found locally for '{pbr_type}'. Path: '{abs_tex_path or tex_path_raw}'.")
                 import_errors.append(f"Import-{pbr_type}: File not found.")
                 continue
 
-            file_to_import, is_converted = abs_tex_path, False
+            file_to_import = abs_tex_path
+            is_converted = False
             if abs_tex_path.lower().endswith((".dds", ".rtex.dds")):
                 texconv_path = PLUGIN_SETTINGS.get("texconv_path")
                 if texconv_path and os.path.isfile(texconv_path):
@@ -1397,12 +1398,21 @@ def handle_import_textures():
                         file_to_import = convert_dds_to_png(texconv_path, abs_tex_path, "")
                         is_converted = True
                     except Exception as e:
-                        log_warning(f"    DDS conversion failed: {e}. Attempting direct DDS import.")
-                        import_errors.append(f"Import-{pbr_type} (TexconvFail)")
-                else: log_warning("    texconv not configured; attempting direct DDS import.")
+                        log_error(f"    DDS conversion failed for '{safe_basename(abs_tex_path)}': {e}", exc_info=True)
+                        import_errors.append(f"TexconvError: {safe_basename(abs_tex_path)}")
+                        continue # Skip this texture if conversion fails, as direct import is unreliable
+                else:
+                    log_warning(f"    texconv.exe not configured or path invalid. Cannot convert '{safe_basename(abs_tex_path)}'. Skipping.")
+                    import_errors.append("TexconvConfigError: Path not set")
+                    continue # Skip this texture
             
             imported_res_id = substance_painter.resource.import_project_resource(file_to_import, substance_painter.resource.Usage.TEXTURE).identifier()
-            if not imported_res_id: raise RuntimeError("Texture import failed to return valid ResourceID.")
+            if not imported_res_id:
+                # This can happen if Painter fails to decode the image even after conversion (unlikely for PNG)
+                log_error(f"    Substance Painter failed to import resource '{safe_basename(file_to_import)}'. It might be invalid.")
+                import_errors.append(f"ImportFail: {safe_basename(file_to_import)}")
+                continue
+
             imported_count += 1
             log_info(f"    Imported '{safe_basename(file_to_import)}' ({'converted' if is_converted else 'original'}) to Painter.")
 
@@ -1428,46 +1438,28 @@ def handle_import_textures():
         log_info("="*20 + " IMPORT TEXTURES FROM REMIX COMPLETED " + "="*20)
         summary = f"Import: Processed={total_from_api if 'total_from_api' in locals() else 'N/A'}, Imported={imported_count}, Assigned={assigned_count}."
         if import_errors:
-            summary += f" Encountered {len(set(import_errors))} unique issue(s). Check logs."
+            unique_errors = set(import_errors)
+            summary += f" Encountered {len(unique_errors)} unique issue(s)."
+            if "TexconvConfigError: Path not set" in unique_errors:
+                summary += " CRITICAL: texconv.exe is not configured in settings."
         display_message_safe(f"{'Warning' if import_errors else 'Success'}: {summary}")
 
 
-def handle_push_to_remix(override_link=False):
+def handle_push_to_remix():
     log_info("="*20 + " PUSH TO REMIX INITIATED " + "="*20)
-    if override_link:
-        log_info("Override Link active: Will push to currently selected Remix asset.")
     all_errors, updated_types, save_requested = [], [], False
     exported_files, ingested_paths, textures_to_update = {}, {}, []
     try:
-        if not check_requests_dependency(): raise Exception("'requests' library missing.")
+        if not check_requests_dependency(): raise Exception("'requests' library is missing.")
         if not substance_painter.project.is_open(): raise Exception("No Painter project open.")
         
-        linked_material_prim = None
-        material_hash = None
+        metadata = substance_painter.project.Metadata("RTXRemixConnectorLink")
+        linked_material_prim = metadata.get("remix_material_prim")
+        material_hash = metadata.get("remix_material_hash")
 
-        if override_link:
-            log_info("Pushing to selected asset in Remix, ignoring project link.")
-            _, linked_material_prim, _, sel_err = get_selected_remix_asset_details()
-            if sel_err:
-                raise Exception(f"Could not get selected asset from Remix: {sel_err}")
-            if not linked_material_prim:
-                raise Exception("No material selected in Remix.")
-            
-            material_hash_match = re.search(r'([A-Z0-9]{16})$', linked_material_prim)
-            if material_hash_match:
-                material_hash = material_hash_match.group(1)
-            else:
-                raise Exception(f"Could not extract material hash from selected prim: {linked_material_prim}")
-            
-            log_info(f"Pushing to selected Remix material prim: {linked_material_prim} (Hash: {material_hash})")
-        else:
-            metadata = substance_painter.project.Metadata("RTXRemixConnectorLink")
-            linked_material_prim = metadata.get("remix_material_prim")
-            material_hash = metadata.get("remix_material_hash")
-
-            if not linked_material_prim or not material_hash:
-                raise Exception("Project not linked to a Remix material. Try 'Push to Selected Remix Asset' or 'Pull from Remix' first.")
-            log_info(f"Found linked Remix material prim: {linked_material_prim} (Hash: {material_hash})")
+        if not linked_material_prim or not material_hash:
+            raise Exception("Project not linked to a Remix material or material hash is missing from metadata.")
+        log_info(f"Found linked Remix material prim: {linked_material_prim} (Hash: {material_hash})")
 
         remix_proj_dir, dir_err = get_remix_project_default_output_dir()
         if dir_err: raise Exception(f"Could not get Remix project directory: {dir_err}")
@@ -1512,8 +1504,7 @@ def handle_push_to_remix(override_link=False):
             {"p_channel": "roughness", "pbr_type": "roughness"},
             {"p_channel": "metallic", "pbr_type": "metallic"},
             {"p_channel": "height", "pbr_type": "height"},
-            {"p_channel": "emissive", "pbr_type": "emissive"},
-            {"p_channel": "ambientOcclusion", "pbr_type": "ao"}
+            {"p_channel": "emissive", "pbr_type": "emissive"}
         ]
 
         base_params = {
@@ -1679,7 +1670,8 @@ def handle_settings():
                 if new_settings:
                     PLUGIN_SETTINGS.update(new_settings)
                     save_plugin_settings()
-                    log_info(f"Settings updated. Log level is now: {PLUGIN_SETTINGS.get('log_level')}")
+                    # Re-run the setup logic to apply new settings like log level and texconv path immediately
+                    setup_logging()
                     display_message_safe("Settings saved successfully.")
                 else: log_warning("Settings accepted, but no new settings returned.")
             else: log_error("Settings accepted, but 'get_settings' method is missing.")

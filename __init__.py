@@ -27,7 +27,7 @@ def reload_core_module():
             remix_core = importlib.reload(remix_core)
             print("[RemixConnector] Successfully reloaded 'core.py' module.")
         else:
-            import remix_connector
+            import core
             remix_core = core
             print("[RemixConnector] Successfully loaded 'core.py' module for the first time.")
 
@@ -62,7 +62,6 @@ def create_plugin_actions():
         {"text": "Pull From Remix", "handler": "handle_pull_from_remix"},
         {"text": "Import Textures from Remix", "handler": "handle_import_textures"},
         {"text": "Push To Remix", "handler": "handle_push_to_remix"},
-        {"text": "Push To Selected Remix Asset", "handler": "handle_push_to_remix", "override_link": True},
         {"text": "Settings...", "handler": "handle_settings"}
     ]
 
