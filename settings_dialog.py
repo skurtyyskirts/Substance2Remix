@@ -109,6 +109,12 @@ def get_settings_dialog_class(core_for_dialog):
             elif key == "log_level":
                 widget = self.QtWidgets.QComboBox()
                 widget.addItems(["debug", "info", "warning", "error"])
+            elif key == "texture_workflow":
+                widget = self.QtWidgets.QComboBox()
+                widget.addItems(["Metallic/Roughness", "Specular/Glossiness"])
+            elif key == "normal_format":
+                widget = self.QtWidgets.QComboBox()
+                widget.addItems(["DirectX", "OpenGL"])
             elif key == "blender_smart_uv_stretch_to_bounds": # Also a bool handled by QCheckBox
                 widget = self.QtWidgets.QCheckBox()
             elif isinstance(current_value, (int, float)): # Handle numbers that might need validators
@@ -328,6 +334,8 @@ if __name__ == "__main__":
             "auto_unwrap_with_blender_on_pull": True, "blender_smart_uv_stretch_to_bounds": "True",
             "blender_smart_uv_angle_limit": 66.0, "some_integer_setting": 123,
             "a_float_setting": 45.6,
+            "texture_workflow": "Metallic/Roughness",
+            "normal_format": "DirectX",
             "unrepresented_setting": "should_pass_through"
         }
 

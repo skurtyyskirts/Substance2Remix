@@ -515,6 +515,8 @@ PLUGIN_SETTINGS = {
     "blender_smart_uv_stretch_to_bounds": "True",
     "use_simple_tiling_mesh_on_pull": False,
     "simple_tiling_mesh_path": "assets/meshes/plane_tiling.usd",
+    "texture_workflow": "Metallic/Roughness",
+    "normal_format": "DirectX",
 }
 
 PAINTER_CHANNEL_TO_REMIX_PBR_MAP = {
@@ -522,10 +524,12 @@ PAINTER_CHANNEL_TO_REMIX_PBR_MAP = {
     "normal": "normal", "height": "height", "displacement": "height", "roughness": "roughness",
     "metallic": "metallic", "metalness": "metallic", "emissive": "emissive", "emission": "emissive",
     "opacity": "opacity",
+    "ambientocclusion": "ao", "ambient_occlusion": "ao", "ao": "ao"
 }
 REMIX_PBR_TO_PAINTER_CHANNEL_MAP = {
     "albedo": "baseColor", "normal": "normal", "height": "height", "roughness": "roughness",
-    "metallic": "metallic", "emissive": "emissive", "opacity": "opacity",
+    "metallic": "metallic", "emissive": "emissive", "opacity": "opacity", "specular": "specular", "glossiness": "glossiness",
+    "ao": "ambientOcclusion"
 }
 
 PAINTER_STRING_TO_CHANNELTYPE_MAP = {}
@@ -564,17 +568,44 @@ REMIX_ATTR_SUFFIX_TO_PBR_MAP = {
     "metallic_texture": "metallic", "metalness_texture": "metallic",
     "emissive_mask_texture": "emissive", "emissive_texture": "emissive", "emissive_color_texture": "emissive",
     "opacity_texture": "opacity", "opacitymask_texture": "opacity", "opacity": "opacity", "transparency_texture": "opacity",
+    "specular_texture": "specular",
+    "glossiness_texture": "glossiness", "gloss_texture": "glossiness",
+    "ao_texture": "ao", "ambient_occlusion_texture": "ao"
 }
 
-PBR_TO_MDL_INPUT_MAP = {
+# This is the primary map for a Metallic/Roughness workflow, which is standard for OmniPBR.
+PBR_TO_MDL_INPUT_MAP_METALLIC_ROUGHNESS = {
     "albedo": "diffuse_texture",
     "normal": "normalmap_texture",
-    "height": "height_texture",
+    "height": "displacement_texture",
     "roughness": "reflectionroughness_texture",
     "metallic": "metallic_texture",
-    "emissive": "emissive_mask_texture",
+    "emissive": "emissive_color_texture",
     "opacity": "opacity_texture",
+    "ao": "ao_texture"
 }
+
+# This map is for a Specular/Glossiness workflow. Note that this is for compatibility;
+# OmniPBR and Remix work best with Metallic/Roughness.
+PBR_TO_MDL_INPUT_MAP_SPECULAR_GLOSSINESS = {
+    "albedo": "diffuse_texture",
+    "specular": "specular_texture",
+    "glossiness": "glossiness_texture",
+    "normal": "normalmap_texture",
+    "height": "displacement_texture",
+    "emissive": "emissive_color_texture",
+    "opacity": "opacity_texture",
+    "ao": "ao_texture"
+}
+
+def get_pbr_to_mdl_map():
+    """Returns the appropriate PBR-to-MDL map based on the current workflow setting."""
+    workflow = PLUGIN_SETTINGS.get("texture_workflow", "Metallic/Roughness")
+    if workflow == "Specular/Glossiness":
+        return PBR_TO_MDL_INPUT_MAP_SPECULAR_GLOSSINESS
+    return PBR_TO_MDL_INPUT_MAP_METALLIC_ROUGHNESS
+
+PBR_TO_MDL_INPUT_MAP = get_pbr_to_mdl_map()
 
 _logger = substance_painter.logging
 def log_debug(message):
@@ -1292,7 +1323,9 @@ def handle_pull_from_remix():
         return
     log_info(f"Creating Painter project with mesh: '{safe_basename(mesh_path)}'")
     try:
-        proj_settings = substance_painter.project.Settings(normal_map_format=substance_painter.project.NormalMapFormat.DirectX)
+        normal_format_setting = PLUGIN_SETTINGS.get("normal_format", "DirectX")
+        painter_normal_format = substance_painter.project.NormalMapFormat.DirectX if normal_format_setting == "DirectX" else substance_painter.project.NormalMapFormat.OpenGL
+        proj_settings = substance_painter.project.Settings(normal_map_format=painter_normal_format)
         create_kwargs = {"mesh_file_path": mesh_path, "settings": proj_settings}
         template_path = PLUGIN_SETTINGS.get("painter_import_template_path")
         if template_path and os.path.isfile(template_path):
@@ -1494,19 +1527,35 @@ def handle_push_to_remix():
         dynamic_preset_name = f"Remix_Dynamic_{material_hash}"
         log_info(f"Creating dynamic export preset '{dynamic_preset_name}'")
 
+        workflow = PLUGIN_SETTINGS.get("texture_workflow", "Metallic/Roughness")
+        maps_to_create = []
+        if workflow == "Metallic/Roughness":
+            maps_to_create = [
+                {"p_channel": "baseColor", "pbr_type": "albedo"},
+                {"p_channel": "normal", "pbr_type": "normal"},
+                {"p_channel": "roughness", "pbr_type": "roughness"},
+                {"p_channel": "metallic", "pbr_type": "metallic"},
+                {"p_channel": "height", "pbr_type": "height"},
+                {"p_channel": "emissive", "pbr_type": "emissive"},
+                {"p_channel": "ao", "pbr_type": "ao"},
+                {"p_channel": "opacity", "pbr_type": "opacity"}
+            ]
+        else:  # Specular/Glossiness
+            maps_to_create = [
+                {"p_channel": "baseColor", "pbr_type": "albedo"},
+                {"p_channel": "specular", "pbr_type": "specular"},
+                {"p_channel": "glossiness", "pbr_type": "glossiness"},
+                {"p_channel": "normal", "pbr_type": "normal"},
+                {"p_channel": "height", "pbr_type": "height"},
+                {"p_channel": "emissive", "pbr_type": "emissive"},
+                {"p_channel": "ao", "pbr_type": "ao"},
+                {"p_channel": "opacity", "pbr_type": "opacity"}
+            ]
+
         dynamic_preset_maps = []
         filename_map_for_lookup = {}
 
         # Based on the structure in the static Remix.spexp preset file
-        maps_to_create = [
-            {"p_channel": "baseColor", "pbr_type": "albedo"},
-            {"p_channel": "normal", "pbr_type": "normal"},
-            {"p_channel": "roughness", "pbr_type": "roughness"},
-            {"p_channel": "metallic", "pbr_type": "metallic"},
-            {"p_channel": "height", "pbr_type": "height"},
-            {"p_channel": "emissive", "pbr_type": "emissive"}
-        ]
-
         base_params = {
             "fileFormat": export_format, "bitDepth": "8", "paddingAlgorithm": export_padding,
             "dithering": False, "sizeMultiplier": 1, "keepAlpha": True
@@ -1531,6 +1580,10 @@ def handle_push_to_remix():
                     {"srcMapType": "documentMap", "srcMapName": "baseColor", "srcChannel": "G", "destChannel": "G"},
                     {"srcMapType": "documentMap", "srcMapName": "baseColor", "srcChannel": "B", "destChannel": "B"},
                     {"srcMapType": "documentMap", "srcMapName": "opacity", "srcChannel": "L", "destChannel": "A"}]
+            elif painter_channel == 'opacity':
+                # This ensures opacity is exported on its own if needed, but the primary path is via baseColor's alpha.
+                channels_config = [
+                    {"srcMapType": "documentMap", "srcMapName": "opacity", "srcChannel": "L", "destChannel": "A"}]
             elif painter_channel == 'normal':
                  channels_config = [
                     {"srcMapType": "documentMap", "srcMapName": "normal", "srcChannel": "R", "destChannel": "R"},
@@ -1542,11 +1595,12 @@ def handle_push_to_remix():
                     {"srcMapType": "documentMap", "srcMapName": "emissive", "srcChannel": "G", "destChannel": "G"},
                     {"srcMapType": "documentMap", "srcMapName": "emissive", "srcChannel": "B", "destChannel": "B"}]
             else:
+                # This handles single-channel maps like roughness, metallic, height, ao, opacity, specular, glossiness
                 channels_config = [{"srcMapType": "documentMap", "srcMapName": painter_channel, "srcChannel": "L", "destChannel": "L"}]
 
             dynamic_preset_maps.append({
                 "fileName": filename_no_ext,
-                "parameters": base_params.copy(), # Use copy to be safe
+                "parameters": base_params.copy(),
                 "channels": channels_config
             })
 
@@ -1589,12 +1643,9 @@ def handle_push_to_remix():
             raise Exception("Ingestion failed for all textures.")
         
         log_info("--- Preparing batch update for Remix ---")
+        pbr_to_mdl_map = get_pbr_to_mdl_map()
         for pbr_type, path in ingested_paths.items():
-            mdl_input = PBR_TO_MDL_INPUT_MAP.get(pbr_type)
-            if pbr_type == "metallic" and mdl_input == "metalness_texture":
-                log_warning("Overriding 'metalness_texture' with 'metallic_texture' for metallic PBR type.")
-                mdl_input = "metallic_texture"
-
+            mdl_input = pbr_to_mdl_map.get(pbr_type)
             if not mdl_input:
                 all_errors.append(f"MDLMapFail-{pbr_type}")
                 continue
@@ -1642,6 +1693,9 @@ def handle_settings():
         log_info("Attempting to create dialog using imported factory.")
         try:
             parent_win = substance_painter.ui.main_window() if ui_available and hasattr(substance_painter.ui, 'main_window') else None
+            # Update the call to get_pbr_to_mdl_map before opening the dialog
+            global PBR_TO_MDL_INPUT_MAP
+            PBR_TO_MDL_INPUT_MAP = get_pbr_to_mdl_map()
             dialog_instance = _create_settings_dialog_func(core_ref, PLUGIN_SETTINGS, parent=parent_win)
             if dialog_instance and hasattr(dialog_instance, '_functional_ui') and dialog_instance._functional_ui:
                 log_info("Factory-created dialog is functional.")
@@ -1672,6 +1726,8 @@ def handle_settings():
                     save_plugin_settings()
                     # Re-run the setup logic to apply new settings like log level and texconv path immediately
                     setup_logging()
+                    # Update the global map after settings have changed
+                    PBR_TO_MDL_INPUT_MAP = get_pbr_to_mdl_map()
                     display_message_safe("Settings saved successfully.")
                 else: log_warning("Settings accepted, but no new settings returned.")
             else: log_error("Settings accepted, but 'get_settings' method is missing.")
