@@ -12,6 +12,7 @@ plugin_description = "Connects Substance Painter to NVIDIA RTX Remix for texture
 # --- Global Variables ---
 remix_core = None
 remix_actions = []
+remix_menu = None
 
 def _load_core_module():
     """
@@ -96,32 +97,38 @@ def create_plugin_actions():
 
 def add_actions_to_menu():
     """
-    Adds the created actions to the appropriate menu.
+    Adds the created actions to a new 'Substance2Remix' menu in the main UI.
     """
+    global remix_menu
     try:
         import substance_painter.ui
-
-        target_menu = None
-        if hasattr(substance_painter.ui.ApplicationMenu, 'Plugins'):
+        from PySide6.QtWidgets import QMenu
+    except ImportError:
+        try:
+            from PySide2.QtWidgets import QMenu
+        except ImportError:
+            print("[RemixConnector] ERROR: Could not import QMenu from PySide6 or PySide2. Cannot create submenu.")
+            # As a fallback, add actions directly to the plugins menu if QMenu fails
             target_menu = substance_painter.ui.ApplicationMenu.Plugins
-        elif hasattr(substance_painter.ui.ApplicationMenu, 'Window'):
-            target_menu = substance_painter.ui.ApplicationMenu.Window
-        else:
-            print("[RemixConnector] ERROR: Could not find 'Plugins' or 'Window' menu.")
+            for action in remix_actions:
+                substance_painter.ui.add_action(target_menu, action)
             return
 
-        try:
-            substance_painter.ui.add_separator(target_menu)
-        except Exception:
-            pass  # Non-critical
-
+    try:
+        # Create a new QMenu which will act as our submenu
+        remix_menu = QMenu("Substance2Remix")
+        
+        # Add all the created actions to our new submenu
         for action in remix_actions:
-            substance_painter.ui.add_action(target_menu, action)
+            remix_menu.addAction(action)
 
-        print(f"[RemixConnector] Added {len(remix_actions)} action(s) to the menu.")
+        # Add the new submenu to the main "Window" menu in Substance Painter
+        substance_painter.ui.add_menu(remix_menu)
+
+        print(f"[RemixConnector] Added {len(remix_actions)} action(s) to the 'Substance2Remix' menu.")
 
     except Exception as e:
-        print(f"[RemixConnector] CRITICAL: Failed to add actions to any menu: {e}")
+        print(f"[RemixConnector] CRITICAL: Failed to create or add submenu: {e}")
         traceback.print_exc()
 
 # === Substance Painter Plugin Entry Points ===
@@ -155,12 +162,15 @@ def start_plugin():
 
 def close_plugin():
     """Called by Substance Painter when the plugin is stopped."""
-    global remix_actions
+    global remix_actions, remix_menu
     try:
         import substance_painter.ui
-        for action in remix_actions:
-            substance_painter.ui.delete_ui_element(action)
+        if remix_menu:
+            substance_painter.ui.delete_ui_element(remix_menu)
+        
+        # Actions are owned by the menu, but we can clear our list
         remix_actions.clear()
+        remix_menu = None # Clear the reference
         print("[RemixConnector] Plugin closed and UI cleaned up.")
     except Exception as e:
         print(f"[RemixConnector] Error during plugin close: {e}")
