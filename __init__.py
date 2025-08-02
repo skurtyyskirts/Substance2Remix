@@ -2,6 +2,8 @@ import importlib
 import os
 import sys
 import traceback
+from . import dependency_manager
+
 
 # --- Plugin Metadata ---
 plugin_name = "RTX Remix Connector"
@@ -11,36 +13,34 @@ plugin_description = "Connects Substance Painter to NVIDIA RTX Remix for texture
 remix_core = None
 remix_actions = []
 
-def reload_core_module():
+def _load_core_module():
     """
-    Safely imports or reloads the main logic from core.py and runs its setup.
+    Loads or reloads the main logic from core.py.
+    This function will be called after dependencies are checked.
     """
     global remix_core
-
-    plugin_path = os.path.dirname(os.path.abspath(__file__))
-    if plugin_path not in sys.path:
-        sys.path.append(plugin_path)
+    from . import core
 
     try:
-        # Use importlib to reload the module if it's already loaded
-        if 'core' in sys.modules and remix_core is not None:
-            remix_core = importlib.reload(remix_core)
-            print("[RemixConnector] Successfully reloaded 'core.py' module.")
+        if 'remix_core' in globals() and remix_core:
+            remix_core = importlib.reload(core)
+            print(f"[RemixConnector] Successfully reloaded 'core.py' module.")
         else:
-            import core
             remix_core = core
-            print("[RemixConnector] Successfully loaded 'core.py' module for the first time.")
+            print(f"[RemixConnector] Successfully loaded 'core.py' module for the first time.")
 
-        # Call the setup function from the newly loaded/reloaded module
         if hasattr(remix_core, 'setup_logging') and callable(remix_core.setup_logging):
             remix_core.setup_logging()
         else:
             print("[RemixConnector] WARNING: Core module is missing a callable 'setup_logging' function.")
+        
+        return True
 
     except Exception as e:
         print(f"[RemixConnector] CRITICAL ERROR: Failed to load core.py. The plugin cannot run. Error: {e}")
         traceback.print_exc()
         remix_core = None
+        return False
 
 def create_plugin_actions():
     """
@@ -62,14 +62,31 @@ def create_plugin_actions():
         {"text": "Pull From Remix", "handler": "handle_pull_from_remix"},
         {"text": "Import Textures from Remix", "handler": "handle_import_textures"},
         {"text": "Push To Remix", "handler": "handle_push_to_remix"},
+        {"text": "Force Push to Remix", "handler": "handle_relink_and_push_to_remix"},
         {"text": "Settings...", "handler": "handle_settings"}
     ]
+
+    from . import settings_dialog
+    import substance_painter.ui
 
     for adef in action_definitions:
         try:
             if hasattr(remix_core, adef["handler"]):
                 action = QAction(adef["text"], None)
-                action.triggered.connect(getattr(remix_core, adef["handler"]))
+                handler_func = getattr(remix_core, adef["handler"])
+
+                if adef["handler"] == "handle_settings":
+                    main_window = substance_painter.ui.get_main_window()
+                    # Directly create and show the dialog here
+                    def show_settings():
+                        dialog = settings_dialog.create_settings_dialog_instance(remix_core, remix_core.PLUGIN_SETTINGS, parent=main_window)
+                        if dialog.exec_():
+                            remix_core.PLUGIN_SETTINGS = dialog.get_settings()
+                            remix_core.save_plugin_settings()
+                    action.triggered.connect(show_settings)
+                else:
+                    action.triggered.connect(handler_func)
+                
                 remix_actions.append(action)
                 print(f"[RemixConnector] Action '{adef['text']}' created and connected.")
             else:
@@ -113,20 +130,28 @@ def start_plugin():
     """Called by Substance Painter when the plugin is started."""
     print("[RemixConnector] Starting plugin...")
 
-    reload_core_module()
-
-    if remix_core is None:
-        # Safely report critical startup failure to the log console
-        print("\n" + "="*50)
-        print("RTX REMIX CONNECTOR: FATAL ERROR ON STARTUP")
-        print("The core logic (core.py) failed to load. Please check the log for the full traceback.")
-        print("The plugin will not be available.")
-        print("="*50 + "\n")
+    # Ensure all required packages are installed before loading the main logic
+    if not dependency_manager.ensure_dependencies_installed():
+        # If dependencies fail, display an error and halt the plugin loading process.
+        try:
+            import substance_painter.ui
+            substance_painter.ui.display_message(
+                "Remix Connector: Failed to install required Python dependencies. "
+                "The plugin may not work correctly. Check the log for details."
+            )
+        except (ImportError, AttributeError) as e:
+            print(f"[RemixConnector] Could not display UI warning about dependencies: {e}")
         return
 
-    create_plugin_actions()
-    add_actions_to_menu()
-    print("[RemixConnector] Plugin UI initialization sequence completed.")
+    # Once dependencies are confirmed, load the core module and build the UI
+    if _load_core_module():
+        create_plugin_actions()
+        add_actions_to_menu()
+        print("[RemixConnector] Plugin UI initialization sequence completed.")
+    else:
+        # This will be logged by _load_core_module, but we can add a final message.
+        print("[RemixConnector] Halting plugin startup due to critical error in core module.")
+
 
 def close_plugin():
     """Called by Substance Painter when the plugin is stopped."""

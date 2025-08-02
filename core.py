@@ -247,7 +247,7 @@ settings_dialog_available = False
 _settings_dialog_import_error_message = ""
 
 try:
-    from settings_dialog import create_settings_dialog_instance as _ImportedSettingsDialogFactory
+    from .settings_dialog import create_settings_dialog_instance as _ImportedSettingsDialogFactory
     _create_settings_dialog_func = _ImportedSettingsDialogFactory
     settings_dialog_available = True
     print("[RemixConnector Core] Successfully imported SettingsDialog factory 'create_settings_dialog_instance' from settings_dialog module.")
@@ -481,10 +481,16 @@ except ImportError:
 
 try:
     import requests
-    requests_available = True
 except ImportError:
-    requests = None; requests_available = False
-    substance_painter.logging.warning("[RemixConnector Core] 'requests' library not initially found.")
+    # This is now handled by the dependency manager at startup.
+    # If it fails, the plugin won't load, so we can assume 'requests' is available here.
+    # A placeholder class is useful for preventing crashes if the script is run in an environment
+    # where dependency check did not run.
+    class requests:
+        @staticmethod
+        def request(*args, **kwargs):
+            raise ImportError("requests library is not available. Dependency check may have failed.")
+    print("[RemixConnector Core] 'requests' module not found at import time. Will rely on dependency manager.")
 
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_POLL_TIMEOUT_SECONDS = 60.0
@@ -593,69 +599,14 @@ def log_error(message, exc_info=False):
     if hasattr(_logger, 'error'): _logger.error(log_msg)
     else: _logger.info(log_msg)
 
-def get_painter_python_executable():
-    try:
-        painter_base_dir = os.path.dirname(sys.executable)
-        potential_paths = [
-            os.path.join(painter_base_dir, "resources", "pythonsdk", "python.exe"),
-            os.path.join(painter_base_dir, "Contents", "Resources", "pythonsdk", "bin", "python3"),
-            os.path.join(painter_base_dir, "pythonsdk", "python"),
-        ]
-        for py_sdk_path in potential_paths:
-            if os.path.isfile(py_sdk_path):
-                log_debug(f"Found Painter Python SDK at: {py_sdk_path}")
-                return py_sdk_path
-        log_warning("Painter's python.exe not found in typical 'resources/pythonsdk'.")
-        return "python.exe"
-    except Exception as e:
-        log_error(f"Error detecting Painter's Python executable: {e}. Falling back to 'python.exe'.")
-        return "python.exe"
 
-def check_pillow_installation():
-    if PIL_AVAILABLE:
-        log_info(f"Pillow (PIL) installed: Yes (Version: {PIL_VERSION})")
-        return True
-    log_warning("--- Pillow (PIL) Dependency ---")
-    log_warning("Pillow library not installed. This is often required for advanced image operations.")
-    py_exe = get_painter_python_executable()
-    if py_exe and "python.exe" not in py_exe.lower() and "python3" not in py_exe.lower() and "python" not in py_exe.lower() :
-        log_warning(f"Could not reliably determine Painter's Python executable path (got: {py_exe}).")
-        log_warning("Manual installation of Pillow into Painter's Python site-packages might be needed.")
-    elif py_exe:
-        py_dir = os.path.dirname(py_exe)
-        site_packages_paths_to_try = [
-            os.path.join(py_dir, 'Lib', 'site-packages'),
-            os.path.join(os.path.dirname(py_dir), 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages'),
-        ]
-        site_packages_path_found = next((sp_path for sp_path in site_packages_paths_to_try if os.path.isdir(sp_path)), None)
-        if site_packages_path_found:
-            log_warning(f"To install Pillow (if needed): Open a command prompt/terminal, then run:")
-            log_warning(f"  \"{py_exe}\" -m pip install --upgrade --target=\"{site_packages_path_found}\" Pillow")
-        else:
-            log_warning(f"Could not determine site-packages path for Painter's Python ({py_exe}).")
-    log_warning("Please restart Substance Painter after installing any new Python packages.")
-    log_warning("---")
-    return False
+
+
 
 def setup_logging():
     load_plugin_settings()
     log_info(f"Remix Connector logging initialized (Level: {PLUGIN_SETTINGS.get('log_level', 'info')}). Settings loaded from: {SETTINGS_FILE_PATH or 'Unknown (defaults used)'}")
-    check_pillow_installation()
 
-def check_requests_dependency():
-    global requests_available, requests
-    if not requests_available or requests is None:
-        try:
-            import requests as req_check
-            requests = req_check
-            requests_available = True
-            log_info("'requests' library became available after initial check (or was already).")
-            return True
-        except ImportError:
-            log_error("'requests' library not available. Network operations will fail.")
-            requests_available = False
-            return False
-    return True
 
 def display_message_safe(message, msg_type_enum=None):
     if ui_available and hasattr(substance_painter.ui, 'display_message') and callable(substance_painter.ui.display_message):
@@ -781,7 +732,8 @@ def unwrap_mesh_with_blender(input_mesh_path: str) -> str | None:
         return None
 
 def make_remix_request_with_retries(method, url_endpoint, headers=None, json_payload=None, params=None, retries=3, delay=2, timeout=None, verify_ssl=False):
-    if not check_requests_dependency():
+    if 'requests' not in sys.modules:
+        log_error("'requests' library is not available, network operations cannot proceed.")
         return {"success": False, "status_code": 0, "data": None, "error": "'requests' library not available."}
 
     effective_timeout = timeout if timeout is not None else PLUGIN_SETTINGS.get("poll_timeout", DEFAULT_POLL_TIMEOUT_SECONDS)
@@ -1206,20 +1158,20 @@ def update_remix_textures_batch(textures_to_update: list[tuple[str, str]], proje
     log_info(success_msg)
     return True, None
 
+
+
 def handle_pull_from_remix():
     log_info("="*20 + " PULL FROM REMIX INITIATED " + "="*20)
     pull_errors = []
     if substance_painter.project.is_open():
         log_info("Closing current Painter project before pull...")
-        try: substance_painter.project.close()
+        try:
+            substance_painter.project.close()
         except Exception as e:
             err_msg = f"Failed to close current project: {e}"
             log_error(err_msg, exc_info=True)
             display_message_safe(f"Error: {err_msg}. Aborting.")
             return
-    if not check_requests_dependency():
-        display_message_safe("Pull failed: 'requests' library is missing.")
-        return
 
     mesh_path, material_prim, original_mesh_meta, mesh_path_pre_unwrap = None, None, None, None
     use_simple_mesh = PLUGIN_SETTINGS.get("use_simple_tiling_mesh_on_pull", False)
@@ -1238,8 +1190,10 @@ def handle_pull_from_remix():
             return
         log_info(f"Will apply textures to selected material: {material_prim}")
 
-        try: plugin_root = os.path.dirname(os.path.abspath(__file__))
-        except NameError: plugin_root = os.getcwd()
+        try:
+            plugin_root = os.path.dirname(os.path.abspath(__file__))
+        except NameError:
+            plugin_root = os.getcwd()
         mesh_path = os.path.normpath(os.path.join(plugin_root, simple_mesh_path_setting))
         mesh_path_pre_unwrap = mesh_path
         if not os.path.isfile(mesh_path):
@@ -1251,15 +1205,19 @@ def handle_pull_from_remix():
         if sel_err:
             display_message_safe(f"Selection Error: {sel_err}")
             return
-        if not mesh_file_api: display_message_safe("Error: Could not determine mesh file path from selection."); return
-        if not material_prim: display_message_safe("Error: Could not determine Material Prim from selection."); return
+        if not mesh_file_api:
+            display_message_safe("Error: Could not determine mesh file path from selection.")
+            return
+        if not material_prim:
+            display_message_safe("Error: Could not determine Material Prim from selection.")
+            return
         
         original_mesh_meta = mesh_file_api
         if not os.path.isabs(mesh_file_api):
             log_warning(f"Mesh path '{mesh_file_api}' is relative. Attempting to resolve...")
 
             if not context_file or not os.path.isabs(context_file):
-                display_message_safe(f"Error: Mesh path is relative, but no absolute context file was provided by Remix API. Cannot resolve path.")
+                display_message_safe("Error: Mesh path is relative, but no absolute context file was provided by Remix API. Cannot resolve path.")
                 return
 
             context_dir = os.path.dirname(context_file)
@@ -1296,7 +1254,8 @@ def handle_pull_from_remix():
         create_kwargs = {"mesh_file_path": mesh_path, "settings": proj_settings}
         template_path = PLUGIN_SETTINGS.get("painter_import_template_path")
         if template_path and os.path.isfile(template_path):
-            if "settings" in create_kwargs: del create_kwargs["settings"]
+            if "settings" in create_kwargs:
+                del create_kwargs["settings"]
             create_kwargs["template_file_path"] = template_path
             log_info(f"  Using Painter template: {template_path}")
         substance_painter.project.create(**create_kwargs)
@@ -1339,7 +1298,6 @@ def handle_import_textures():
     can_auto_assign = _set_channel_texture_resource_func is not None
     try:
         if not substance_painter.project.is_open(): raise Exception("No Painter project is open.")
-        if not check_requests_dependency(): raise Exception("'requests' library is missing.")
         metadata = substance_painter.project.Metadata("RTXRemixConnectorLink")
         linked_material_prim = metadata.get("remix_material_prim")
         if not linked_material_prim: raise Exception("Project not linked to a Remix material.")
@@ -1450,7 +1408,6 @@ def handle_push_to_remix():
     all_errors, updated_types, save_requested = [], [], False
     exported_files, ingested_paths, textures_to_update = {}, {}, []
     try:
-        if not check_requests_dependency(): raise Exception("'requests' library is missing.")
         if not substance_painter.project.is_open(): raise Exception("No Painter project open.")
         
         metadata = substance_painter.project.Metadata("RTXRemixConnectorLink")
@@ -1632,7 +1589,204 @@ def handle_push_to_remix():
             log_error(f"Push errors encountered: {all_errors}")
         log_info("="*20 + " PUSH TO REMIX FINISHED " + "="*20)
 
-def handle_settings():
+def handle_relink_and_push_to_remix():
+    log_info("="*20 + " RELINK & PUSH TO REMIX INITIATED " + "="*20)
+    all_errors, updated_types, save_requested = [], [], False
+    exported_files, ingested_paths, textures_to_update = {}, {}, []
+    try:
+        if not substance_painter.project.is_open(): raise Exception("No Painter project open.")
+        
+        # --- Start of Relink-specific logic ---
+        log_info("Getting newly selected asset from Remix to use as the push target.")
+        _, linked_material_prim, _, sel_err = get_selected_remix_asset_details()
+
+        if sel_err:
+            # We can ignore "could not determine mesh path" since we only need the material for pushing.
+            if "Could not determine mesh file path" not in sel_err:
+                raise Exception(f"Error getting selection from Remix: {sel_err}")
+
+        if not linked_material_prim:
+            raise Exception("No material selected in Remix. Please select a material to push textures to.")
+
+        material_hash_match = re.search(r'([A-Z0-9]{16})$', linked_material_prim)
+        if not material_hash_match:
+            raise Exception(f"Could not extract a valid 16-character hash from the selected material prim: {linked_material_prim}")
+        
+        material_hash = material_hash_match.group(1)
+        log_info(f"New Target: Remix material prim: {linked_material_prim} (Hash: {material_hash})")
+        # --- End of Relink-specific logic ---
+
+        remix_proj_dir, dir_err = get_remix_project_default_output_dir()
+        if dir_err: raise Exception(f"Could not get Remix project directory: {dir_err}")
+        
+        painter_export_path = PLUGIN_SETTINGS.get("painter_export_path") or os.path.join(tempfile.gettempdir(), "RemixConnector_Export")
+        os.makedirs(painter_export_path, exist_ok=True)
+        log_info(f"Using Painter export directory: {painter_export_path}")
+
+        all_ts = substance_painter.textureset.all_texture_sets()
+        log_info("Checking for and adding missing channels...")
+        for ts in all_ts:
+            ts_stack = ts.get_stack()
+            if ts_stack and hasattr(ts_stack, 'add_channel'):
+                for name, type_enum in PAINTER_STRING_TO_CHANNELTYPE_MAP.items():
+                    try:
+                        ts_stack.get_channel(type_enum)
+                    except (ValueError, RuntimeError):
+                        try:
+                            fmt = ChannelFormat.L8
+                            if name in ["baseColor", "normal", "emissive"]: fmt = ChannelFormat.sRGB8
+                            elif name == "height": fmt = ChannelFormat.L16F
+                            ts_stack.add_channel(type_enum, fmt)
+                            log_info(f"  Added '{name}' channel to '{ts.name()}'.")
+                        except Exception as e:
+                            log_warning(f"Could not add '{name}' to '{ts.name()}': {e}")
+        
+        texture_sets_to_export = [ts.name() for ts in all_ts]
+        if not texture_sets_to_export: raise Exception("No valid texture sets to export.")
+        
+        export_format = PLUGIN_SETTINGS.get("export_file_format", "png")
+        export_padding = PLUGIN_SETTINGS.get("export_padding", "infinite")
+        dynamic_preset_name = f"Remix_Dynamic_{material_hash}"
+        log_info(f"Creating dynamic export preset '{dynamic_preset_name}'")
+
+        dynamic_preset_maps = []
+        filename_map_for_lookup = {}
+
+        maps_to_create = [
+            {"p_channel": "baseColor", "pbr_type": "albedo"},
+            {"p_channel": "normal", "pbr_type": "normal"},
+            {"p_channel": "roughness", "pbr_type": "roughness"},
+            {"p_channel": "metallic", "pbr_type": "metallic"},
+            {"p_channel": "height", "pbr_type": "height"},
+            {"p_channel": "emissive", "pbr_type": "emissive"}
+        ]
+
+        base_params = {
+            "fileFormat": export_format, "bitDepth": "8", "paddingAlgorithm": export_padding,
+            "dithering": False, "sizeMultiplier": 1, "keepAlpha": True
+        }
+
+        for map_info in maps_to_create:
+            painter_channel = map_info["p_channel"]
+            pbr_type = map_info["pbr_type"]
+            
+            filename_no_ext = f"{material_hash}_{pbr_type}"
+            full_filename_with_ext = f"{filename_no_ext}.{export_format}"
+            
+            log_info(f"  Map for Painter channel '{painter_channel}' will be exported as '{full_filename_with_ext}'")
+            
+            full_path_for_lookup = os.path.join(painter_export_path, full_filename_with_ext).replace('\\', '/')
+            filename_map_for_lookup[full_path_for_lookup] = pbr_type
+
+            channels_config = []
+            if painter_channel == 'baseColor':
+                channels_config = [
+                    {"srcMapType": "documentMap", "srcMapName": "baseColor", "srcChannel": "R", "destChannel": "R"},
+                    {"srcMapType": "documentMap", "srcMapName": "baseColor", "srcChannel": "G", "destChannel": "G"},
+                    {"srcMapType": "documentMap", "srcMapName": "baseColor", "srcChannel": "B", "destChannel": "B"},
+                    {"srcMapType": "documentMap", "srcMapName": "opacity", "srcChannel": "L", "destChannel": "A"}]
+            elif painter_channel == 'normal':
+                 channels_config = [
+                    {"srcMapType": "documentMap", "srcMapName": "normal", "srcChannel": "R", "destChannel": "R"},
+                    {"srcMapType": "documentMap", "srcMapName": "normal", "srcChannel": "G", "destChannel": "G"},
+                    {"srcMapType": "documentMap", "srcMapName": "normal", "srcChannel": "B", "destChannel": "B"}]
+            elif painter_channel == 'emissive':
+                channels_config = [
+                    {"srcMapType": "documentMap", "srcMapName": "emissive", "srcChannel": "R", "destChannel": "R"},
+                    {"srcMapType": "documentMap", "srcMapName": "emissive", "srcChannel": "G", "destChannel": "G"},
+                    {"srcMapType": "documentMap", "srcMapName": "emissive", "srcChannel": "B", "destChannel": "B"}]
+            else:
+                channels_config = [{"srcMapType": "documentMap", "srcMapName": painter_channel, "srcChannel": "L", "destChannel": "L"}]
+
+            dynamic_preset_maps.append({
+                "fileName": filename_no_ext,
+                "parameters": base_params.copy(),
+                "channels": channels_config
+            })
+
+        export_settings = {
+            "exportShaderParams": False, "exportPath": painter_export_path,
+            "exportPresets": [{ "name": dynamic_preset_name, "maps": dynamic_preset_maps }],
+            "exportList": [{"rootPath": name, "exportPreset": dynamic_preset_name} for name in texture_sets_to_export]
+        }
+        
+        log_info(f"Starting Painter texture export...")
+        export_result = substance_painter.export.export_project_textures(export_settings)
+        
+        if export_result.status != substance_painter.export.ExportStatus.Success:
+            raise Exception(f"Texture export failed: {export_result.message}")
+
+        total_exported_textures = sum(len(file_list) for file_list in export_result.textures.values())
+        log_info(f"Export successful. Exported {total_exported_textures} textures from {len(export_result.textures)} texture set(s).")
+        
+        for ts, file_list in export_result.textures.items():
+            for file_path in file_list:
+                normalized_path = file_path.replace('\\', '/')
+                if normalized_path in filename_map_for_lookup:
+                    pbr_type = filename_map_for_lookup[normalized_path]
+                    exported_files[pbr_type] = file_path
+                    log_info(f"  Mapped '{os.path.basename(file_path)}' to PBR type '{pbr_type}'.")
+                else:
+                    log_warning(f"  Exported file '{os.path.basename(file_path)}' was not found in our pre-defined filename map. Skipping.")
+        
+        if not exported_files:
+            raise Exception("Export succeeded, but no recognized texture files were mapped. Check preset and filename map generation.")
+
+        log_info("--- Starting Texture Ingestion ---")
+        for pbr_type, path in exported_files.items():
+            ingested_path, err = ingest_texture_to_remix(pbr_type, path, remix_proj_dir)
+            if err:
+                all_errors.append(f"IngestFail-{pbr_type}: {err}")
+                continue
+            ingested_paths[pbr_type] = ingested_path
+        if not ingested_paths:
+            raise Exception("Ingestion failed for all textures.")
+        
+        log_info("--- Preparing batch update for Remix ---")
+        for pbr_type, path in ingested_paths.items():
+            mdl_input = PBR_TO_MDL_INPUT_MAP.get(pbr_type)
+            if pbr_type == "metallic" and mdl_input == "metalness_texture":
+                log_warning("Overriding 'metalness_texture' with 'metallic_texture' for metallic PBR type.")
+                mdl_input = "metallic_texture"
+
+            if not mdl_input:
+                all_errors.append(f"MDLMapFail-{pbr_type}")
+                continue
+            textures_to_update.append((f"{linked_material_prim}/Shader.inputs:{mdl_input}", path))
+            updated_types.append(pbr_type)
+        
+        if textures_to_update:
+            success, err = update_remix_textures_batch(textures_to_update, remix_proj_dir)
+            if not success:
+                raise Exception(f"Failed to update textures in Remix: {err}")
+            save_requested = True
+        else:
+            log_warning("No textures prepared for batch update.")
+    except Exception as e:
+        all_errors.append(f"CriticalError: {str(e)}")
+        log_error(f"A critical error occurred during relink & push: {e}", exc_info=True)
+        display_message_safe(f"Error during Relink & Push: {e}")
+    finally:
+        if save_requested and linked_material_prim and not all_errors:
+            try:
+                log_info("Attempting to save Remix layer changes...")
+                success, err = save_remix_layer(linked_material_prim)
+                if not success:
+                    all_errors.append(f"LayerSaveFail: {err}")
+            except Exception as e_save:
+                all_errors.append(f"LayerSaveException: {e_save}")
+        elif all_errors:
+            log_warning("Skipping Remix layer save due to previous errors.")
+        
+        summary = f"Relink & Push finished with {len(all_errors)} issue(s). " if all_errors else "Relink & Push completed successfully! "
+        summary += f"Updated: {len(updated_types)}/{len(exported_files)} textures on '{safe_basename(linked_material_prim) if 'linked_material_prim' in locals() else 'Unknown'}."
+        display_message_safe(summary)
+        log_info(summary)
+        if all_errors:
+            log_error(f"Relink & Push errors encountered: {all_errors}")
+        log_info("="*20 + " RELINK & PUSH TO REMIX FINISHED " + "="*20)
+
+def handle_settings(parent=None):
     log_info("="*20 + " SETTINGS ACTION TRIGGERED " + "="*20)
     global PLUGIN_SETTINGS
     dialog_instance = None

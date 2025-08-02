@@ -109,8 +109,6 @@ def get_settings_dialog_class(core_for_dialog):
             elif key == "log_level":
                 widget = self.QtWidgets.QComboBox()
                 widget.addItems(["debug", "info", "warning", "error"])
-            elif key == "blender_smart_uv_stretch_to_bounds": # Also a bool handled by QCheckBox
-                widget = self.QtWidgets.QCheckBox()
             elif isinstance(current_value, (int, float)): # Handle numbers that might need validators
                 widget = self.QtWidgets.QLineEdit()
                 if isinstance(current_value, int) and self.QtGui and hasattr(self.QtGui, 'QIntValidator'):
@@ -131,10 +129,7 @@ def get_settings_dialog_class(core_for_dialog):
                 if key in self.current_settings:
                     value = self.current_settings[key]
                     if isinstance(widget, self.QtWidgets.QCheckBox):
-                        if key == "blender_smart_uv_stretch_to_bounds":
-                            widget.setChecked(str(value).lower() == 'true')
-                        else:
-                            widget.setChecked(bool(value))
+                        widget.setChecked(bool(value))
                     elif isinstance(widget, self.QtWidgets.QComboBox):
                         match_flag = self.QtCore.Qt.MatchFixedString if hasattr(self.QtCore, 'Qt') and hasattr(self.QtCore.Qt, 'MatchFixedString') else 0
                         index = widget.findText(str(value), match_flag)
@@ -156,10 +151,7 @@ def get_settings_dialog_class(core_for_dialog):
 
 
                 if isinstance(widget, self.QtWidgets.QCheckBox):
-                    if key == "blender_smart_uv_stretch_to_bounds":
-                        self.new_settings[key] = "True" if widget.isChecked() else "False"
-                    else:
-                        self.new_settings[key] = widget.isChecked()
+                    self.new_settings[key] = widget.isChecked()
                 elif isinstance(widget, self.QtWidgets.QComboBox):
                     self.new_settings[key] = widget.currentText()
                 elif isinstance(widget, self.QtWidgets.QLineEdit):
