@@ -71,7 +71,7 @@ The Settings panel (**Window > RTX Remix Connector > Settings...**) allows you t
 
 ## Changelog
 
-### v1.1.0 - Major Refactor & Async Support
+### v0.5.0 - Major Refactor & Async Support
 - **Modular Codebase**: Refactored monolithic `core.py` into specialized modules (`painter_controller`, `remix_api`, `texture_processor`, etc.) for better maintainability.
 - **Async Operations**: Long-running tasks (import/export) now run in background threads with a progress bar, preventing Painter from freezing.
 - **Improved Dependency Management**: Dependencies (`requests`, `PIL`, etc.) are now vendored or better managed to ensure stability.
