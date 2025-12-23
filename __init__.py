@@ -3,11 +3,11 @@ import os
 import sys
 import traceback
 from . import dependency_manager
-
+from .plugin_info import PLUGIN_NAME, PLUGIN_DESCRIPTION
 
 # --- Plugin Metadata ---
-plugin_name = "RTX Remix Connector"
-plugin_description = "Connects Substance Painter to NVIDIA RTX Remix for texture/mesh exchange."
+plugin_name = PLUGIN_NAME
+plugin_description = PLUGIN_DESCRIPTION
 
 # --- Global Variables ---
 remix_core = None
@@ -51,23 +51,22 @@ def create_plugin_actions():
     remix_actions.clear()
 
     try:
-        from PySide6.QtGui import QAction
+        from .qt_utils import QAction
+        if not QAction: raise ImportError("QAction not found in qt_utils")
     except ImportError:
-        try:
-            from PySide2.QtGui import QAction
-        except ImportError:
-            print("[RemixConnector] ERROR: Could not import QAction from PySide6 or PySide2. Cannot create UI.")
-            return
+        print("[RemixConnector] ERROR: Could not import QAction from qt_utils. Cannot create UI.")
+        return
 
     action_definitions = [
         {"text": "Pull From Remix", "handler": "handle_pull_from_remix"},
         {"text": "Import Textures from Remix", "handler": "handle_import_textures"},
         {"text": "Push To Remix", "handler": "handle_push_to_remix"},
         {"text": "Force Push to Remix", "handler": "handle_relink_and_push_to_remix"},
-        {"text": "Settings...", "handler": "handle_settings"}
+        {"text": "Settings...", "handler": "handle_settings"},
+        {"text": "Diagnostics...", "handler": "handle_diagnostics"},
+        {"text": "About...", "handler": "handle_about"},
     ]
 
-    from . import settings_dialog
     import substance_painter.ui
 
     for adef in action_definitions:
@@ -75,19 +74,7 @@ def create_plugin_actions():
             if hasattr(remix_core, adef["handler"]):
                 action = QAction(adef["text"], None)
                 handler_func = getattr(remix_core, adef["handler"])
-
-                if adef["handler"] == "handle_settings":
-                    main_window = substance_painter.ui.get_main_window()
-                    # Directly create and show the dialog here
-                    def show_settings():
-                        dialog = settings_dialog.create_settings_dialog_instance(remix_core, remix_core.PLUGIN_SETTINGS, parent=main_window)
-                        if dialog.exec_():
-                            remix_core.PLUGIN_SETTINGS = dialog.get_settings()
-                            remix_core.save_plugin_settings()
-                    action.triggered.connect(show_settings)
-                else:
-                    action.triggered.connect(handler_func)
-                
+                action.triggered.connect(handler_func)
                 remix_actions.append(action)
                 print(f"[RemixConnector] Action '{adef['text']}' created and connected.")
             else:
@@ -102,29 +89,24 @@ def add_actions_to_menu():
     global remix_menu
     try:
         import substance_painter.ui
-        from PySide6.QtWidgets import QMenu
+        from .qt_utils import QtWidgets
+        QMenu = QtWidgets.QMenu if QtWidgets else None
     except ImportError:
-        try:
-            from PySide2.QtWidgets import QMenu
-        except ImportError:
-            print("[RemixConnector] ERROR: Could not import QMenu from PySide6 or PySide2. Cannot create submenu.")
-            # As a fallback, add actions directly to the plugins menu if QMenu fails
-            target_menu = substance_painter.ui.ApplicationMenu.Plugins
-            for action in remix_actions:
-                substance_painter.ui.add_action(target_menu, action)
-            return
+        QMenu = None
+
+    if not QMenu:
+        print("[RemixConnector] ERROR: Could not import QMenu. Adding actions to Plugins menu fallback.")
+        target_menu = substance_painter.ui.ApplicationMenu.Plugins
+        for action in remix_actions:
+            substance_painter.ui.add_action(target_menu, action)
+        return
 
     try:
-        # Create a new QMenu which will act as our submenu
-        remix_menu = QMenu("Substance2Remix")
-        
-        # Add all the created actions to our new submenu
+        remix_menu = QMenu(plugin_name)
         for action in remix_actions:
             remix_menu.addAction(action)
 
-        # Add the new submenu to the main "Window" menu in Substance Painter
         substance_painter.ui.add_menu(remix_menu)
-
         print(f"[RemixConnector] Added {len(remix_actions)} action(s) to the 'Substance2Remix' menu.")
 
     except Exception as e:
@@ -137,26 +119,20 @@ def start_plugin():
     """Called by Substance Painter when the plugin is started."""
     print("[RemixConnector] Starting plugin...")
 
-    # Ensure all required packages are installed before loading the main logic
     if not dependency_manager.ensure_dependencies_installed():
-        # If dependencies fail, display an error and halt the plugin loading process.
         try:
             import substance_painter.ui
             substance_painter.ui.display_message(
-                "Remix Connector: Failed to install required Python dependencies. "
-                "The plugin may not work correctly. Check the log for details."
+                "Remix Connector: Failed to install/load dependencies. Check logs."
             )
-        except (ImportError, AttributeError) as e:
-            print(f"[RemixConnector] Could not display UI warning about dependencies: {e}")
+        except: pass
         return
 
-    # Once dependencies are confirmed, load the core module and build the UI
     if _load_core_module():
         create_plugin_actions()
         add_actions_to_menu()
         print("[RemixConnector] Plugin UI initialization sequence completed.")
     else:
-        # This will be logged by _load_core_module, but we can add a final message.
         print("[RemixConnector] Halting plugin startup due to critical error in core module.")
 
 
@@ -168,9 +144,8 @@ def close_plugin():
         if remix_menu:
             substance_painter.ui.delete_ui_element(remix_menu)
         
-        # Actions are owned by the menu, but we can clear our list
         remix_actions.clear()
-        remix_menu = None # Clear the reference
+        remix_menu = None
         print("[RemixConnector] Plugin closed and UI cleaned up.")
     except Exception as e:
         print(f"[RemixConnector] Error during plugin close: {e}")

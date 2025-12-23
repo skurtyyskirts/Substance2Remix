@@ -9,7 +9,9 @@ This plugin creates a bridge between Adobe Substance 3D Painter and NVIDIA's RTX
 - **Force Push to Remix**: Push textures to a *different* selected material in Remix, allowing you to reuse your Substance Painter work on multiple assets.
 - **Import Textures from Remix**: Pull textures from a linked material in Remix into the current Substance Painter project.
 - **Auto-unwrap with Blender**: Optionally use Blender to automatically UV unwrap meshes pulled from Remix, streamlining the texturing process.
-- **Settings Panel**: Configure plugin settings, including paths to your Blender executable and the `texconv.exe` utility.
+- **Progress UI**: Long-running operations show a progress/status dialog driven by worker status/progress signals.
+- **Diagnostics & Logs**: Built-in Diagnostics panel and a plugin log file (`logs/remix_connector.log`) to help troubleshoot connection/path issues.
+- **Settings Panel**: Professional tabbed settings UI with browse buttons and a one-click connection test.
 
 ## Requirements
 
@@ -61,9 +63,22 @@ If you want to apply your textures to a different material in Remix:
 
 The Settings panel (**Window > RTX Remix Connector > Settings...**) allows you to configure the following:
 
--   **Blender Executable Path**: The path to your `blender.exe` file. This is required for the auto-unwrap feature.
--   **Texconv Path**: The path to the `texconv.exe` utility. This is used to convert `.dds` files from Remix into a format that Substance Painter can use. A copy is included with this plugin and should be detected automatically.
+-   **API Base URL / Timeout**: Connection settings for the RTX Remix REST API (includes a **Test Connection** button).
+-   **Blender Executable Path**: The path to your `blender.exe` file (optional; required only for auto-unwrap).
+-   **Texconv Path**: The path to the `texconv.exe` utility (used to convert `.dds` pulled from Remix into a Painter-friendly format). A copy is included with this plugin and should be detected automatically.
+-   **Export Options**: Choose export format and optionally export/push a dedicated **Opacity** texture.
 -   **Log Level**: The verbosity of the plugin's logs.
+
+## Changelog
+
+### v1.1.0 - Major Refactor & Async Support
+- **Modular Codebase**: Refactored monolithic `core.py` into specialized modules (`painter_controller`, `remix_api`, `texture_processor`, etc.) for better maintainability.
+- **Async Operations**: Long-running tasks (import/export) now run in background threads with a progress bar, preventing Painter from freezing.
+- **Improved Dependency Management**: Dependencies (`requests`, `PIL`, etc.) are now vendored or better managed to ensure stability.
+- **Force Push (Relink)**: Added ability to relink a project to a new Remix material hash and force push textures.
+- **Diagnostics**: Added `diagnostics_dialog.py` for better troubleshooting.
+- **Settings**: Persistent settings via `settings.json` (auto-generated) and improved Settings dialog.
+- **Fixes**: Numerous bug fixes in texture import/export and path handling.
 
 ## Contributing
 

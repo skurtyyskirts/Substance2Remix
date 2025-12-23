@@ -1,0 +1,165 @@
+{
+    "exportPresets": [
+        {
+            "name": "RTX_Remix_Connector_Preset",
+            "maps": [
+                {
+                    "fileName": "$textureSet_BaseColor",
+                    "parameters": {
+                        "fileFormat": "png",
+                        "bitDepth": "8",
+                        "paddingAlgorithm": "infinite",
+                        "dithering": false,
+                        "sizeMultiplier": 1,
+                        "keepAlpha": true
+                    },
+                    "channels": [
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "baseColor",
+                            "srcChannel": "R",
+                            "destChannel": "R"
+                        },
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "baseColor",
+                            "srcChannel": "G",
+                            "destChannel": "G"
+                        },
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "baseColor",
+                            "srcChannel": "B",
+                            "destChannel": "B"
+                        },
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "opacity",
+                            "srcChannel": "L",
+                            "destChannel": "A"
+                        }
+                    ]
+                },
+                {
+                    "fileName": "$textureSet_Normal",
+                    "parameters": {
+                        "fileFormat": "png",
+                        "bitDepth": "8",
+                        "paddingAlgorithm": "infinite",
+                        "dithering": false,
+                        "sizeMultiplier": 1,
+                        "keepAlpha": true
+                    },
+                    "channels": [
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "normal",
+                            "srcChannel": "R",
+                            "destChannel": "R"
+                        },
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "normal",
+                            "srcChannel": "G",
+                            "destChannel": "G"
+                        },
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "normal",
+                            "srcChannel": "B",
+                            "destChannel": "B"
+                        }
+                    ]
+                },
+                {
+                    "fileName": "$textureSet_Roughness",
+                    "parameters": {
+                        "fileFormat": "png",
+                        "bitDepth": "8",
+                        "paddingAlgorithm": "infinite",
+                        "dithering": false,
+                        "sizeMultiplier": 1,
+                        "keepAlpha": true
+                    },
+                    "channels": [
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "roughness",
+                            "srcChannel": "L",
+                            "destChannel": "L"
+                        }
+                    ]
+                },
+                {
+                    "fileName": "$textureSet_Metallic",
+                    "parameters": {
+                        "fileFormat": "png",
+                        "bitDepth": "8",
+                        "paddingAlgorithm": "infinite",
+                        "dithering": false,
+                        "sizeMultiplier": 1,
+                        "keepAlpha": true
+                    },
+                    "channels": [
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "metallic",
+                            "srcChannel": "L",
+                            "destChannel": "L"
+                        }
+                    ]
+                },
+                {
+                    "fileName": "$textureSet_Height",
+                    "parameters": {
+                        "fileFormat": "png",
+                        "bitDepth": "8",
+                        "paddingAlgorithm": "infinite",
+                        "dithering": false,
+                        "sizeMultiplier": 1,
+                        "keepAlpha": true
+                    },
+                    "channels": [
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "height",
+                            "srcChannel": "L",
+                            "destChannel": "L"
+                        }
+                    ]
+                },
+                {
+                    "fileName": "$textureSet_Emissive",
+                    "parameters": {
+                        "fileFormat": "png",
+                        "bitDepth": "8",
+                        "paddingAlgorithm": "infinite",
+                        "dithering": false,
+                        "sizeMultiplier": 1,
+                        "keepAlpha": true
+                    },
+                    "channels": [
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "emissive",
+                            "srcChannel": "R",
+                            "destChannel": "R"
+                        },
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "emissive",
+                            "srcChannel": "G",
+                            "destChannel": "G"
+                        },
+                        {
+                            "srcMapType": "documentMap",
+                            "srcMapName": "emissive",
+                            "srcChannel": "B",
+                            "destChannel": "B"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

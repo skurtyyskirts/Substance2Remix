@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+env.bak/
+venv.bak/
+logs/
+Pulled Textures/
+assets/gotoingest/
+settings.json
+.vscode/
+.idea/
+*.log
+*.spec
+dist/
+build/
+
