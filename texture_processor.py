@@ -6,6 +6,10 @@ import time
 import re
 import ntpath
 
+# Hard ceilings so a stuck child cannot freeze Painter forever.
+TEXCONV_TIMEOUT_SECONDS = 180
+BLENDER_TIMEOUT_SECONDS = 900
+
 class TextureProcessor:
     def __init__(self, settings_getter, logger, message_callback=None):
         self.settings_getter = settings_getter
@@ -88,8 +92,15 @@ class TextureProcessor:
                 startupinfo.wShowWindow = subprocess.SW_HIDE
                 creationflags = subprocess.CREATE_NO_WINDOW
             
-            result = subprocess.run(command, capture_output=True, text=True, check=False, 
-                                  startupinfo=startupinfo, creationflags=creationflags, encoding='utf-8', errors='ignore')
+            try:
+                result = subprocess.run(
+                    command, capture_output=True, text=True, check=False,
+                    startupinfo=startupinfo, creationflags=creationflags,
+                    encoding='utf-8', errors='ignore',
+                    timeout=TEXCONV_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f"texconv timed out after {TEXCONV_TIMEOUT_SECONDS}s on {self.safe_basename(dds_file)}")
 
             if result.returncode != 0:
                 stdout = (result.stdout or "").strip()
@@ -104,8 +115,10 @@ class TextureProcessor:
 
             if not os.path.exists(expected_output_path):
                 raise RuntimeError(f"texconv reported success but output missing: {expected_output_path}")
-            
+
             return expected_output_path
+        except RuntimeError:
+            raise
         except Exception as e:
             raise RuntimeError(f"Error running texconv: {e}")
 
@@ -159,11 +172,21 @@ class TextureProcessor:
                 startupinfo.wShowWindow = subprocess.SW_HIDE
                 creationflags = subprocess.CREATE_NO_WINDOW
             
-            result = subprocess.run(command, capture_output=True, text=True, check=False,
-                                  startupinfo=startupinfo, creationflags=creationflags, encoding='utf-8', errors='ignore')
-            
-            if result.returncode != 0 or "Error: Python script fail" in result.stderr:
-                self._log_error(f"Blender failed (Code {result.returncode}). Stderr: {result.stderr}")
+            try:
+                result = subprocess.run(
+                    command, capture_output=True, text=True, check=False,
+                    startupinfo=startupinfo, creationflags=creationflags,
+                    encoding='utf-8', errors='ignore',
+                    timeout=BLENDER_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                self._log_error(f"Blender unwrap timed out after {BLENDER_TIMEOUT_SECONDS}s.")
+                self._display_message("Error: Blender auto-unwrap timed out.")
+                return None
+
+            stderr_text = result.stderr or ""
+            if result.returncode != 0 or "Error: Python script fail" in stderr_text:
+                self._log_error(f"Blender failed (Code {result.returncode}). Stderr: {stderr_text}")
                 self._display_message("Error: Blender auto-unwrap failed.")
                 return None
             

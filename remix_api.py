@@ -5,6 +5,7 @@ import time
 import urllib.parse
 import re
 import ntpath
+import threading
 
 # Attempt to import requests
 try:
@@ -14,6 +15,8 @@ except ImportError:
 
 DEFAULT_POLL_TIMEOUT_SECONDS = 60.0
 DEFAULT_REMIX_API_BASE_URL = "http://localhost:8011"
+# The ingest endpoint can run for several minutes on large textures.
+INGEST_REQUEST_TIMEOUT_SECONDS = 600.0
 
 REMIX_ATTR_SUFFIX_TO_PBR_MAP = {
     "diffuse_texture": "albedo", "albedo_texture": "albedo", "basecolor_texture": "albedo", "base_color_texture": "albedo",
@@ -39,6 +42,41 @@ class RemixAPIClient:
         """
         self.settings_getter = settings_getter
         self.logger = logger
+        self._session = None
+        self._session_lock = threading.Lock()
+
+    def _get_session(self):
+        """
+        Lazily create a thread-safe-ish requests.Session. requests.Session
+        is mostly safe for concurrent use; we still guard creation with a
+        lock to avoid two threads racing to instantiate.
+        """
+        if requests is None:
+            return None
+        if self._session is None:
+            with self._session_lock:
+                if self._session is None:
+                    s = requests.Session()
+                    # Bump pool size so concurrent ingest/update calls don't queue.
+                    try:
+                        from requests.adapters import HTTPAdapter
+                        adapter = HTTPAdapter(pool_connections=4, pool_maxsize=8, max_retries=0)
+                        s.mount("http://", adapter)
+                        s.mount("https://", adapter)
+                    except Exception:
+                        pass
+                    self._session = s
+        return self._session
+
+    def close(self):
+        """Release the underlying HTTP connection pool."""
+        with self._session_lock:
+            if self._session is not None:
+                try:
+                    self._session.close()
+                except Exception:
+                    pass
+                self._session = None
 
     def _log_debug(self, msg):
         if hasattr(self.logger, 'debug'): self.logger.debug(msg)
@@ -66,20 +104,37 @@ class RemixAPIClient:
         try: return ntpath.basename(str(path))
         except Exception: return str(path)
 
-    def make_request(self, method, url_endpoint, headers=None, json_payload=None, params=None, retries=3, delay=2, timeout=None, verify_ssl=False):
+    def make_request(self, method, url_endpoint, headers=None, json_payload=None, params=None, retries=3, delay=2, timeout=None, verify_ssl=None):
+        """
+        Performs a Remix REST API request with retries and exponential backoff.
+
+        :param verify_ssl: TLS verification behavior. None = default (True for
+            non-localhost, False for localhost since RTX Remix exposes HTTP
+            on 127.0.0.1 by default).
+        """
         if not requests:
             self._log_error("'requests' library is not available, network operations cannot proceed.")
             return {"success": False, "status_code": 0, "data": None, "error": "'requests' library not available."}
 
-        settings = self.settings_getter()
+        settings = self.settings_getter() or {}
         effective_timeout = timeout if timeout is not None else settings.get("poll_timeout", DEFAULT_POLL_TIMEOUT_SECONDS)
-        
+
         try:
-            current_api_base = settings.get("api_base_url", DEFAULT_REMIX_API_BASE_URL).rstrip('/')
+            current_api_base = str(settings.get("api_base_url", DEFAULT_REMIX_API_BASE_URL) or DEFAULT_REMIX_API_BASE_URL).rstrip('/')
             full_url = f"{current_api_base}/{url_endpoint.lstrip('/')}"
         except Exception as e:
             self._log_error(f"URL construction error: {e}")
             return {"success": False, "status_code": 0, "data": None, "error": "URL construction error."}
+
+        # Default verify behavior: enabled for HTTPS to remote, disabled for
+        # local-loopback HTTP (Remix's typical configuration).
+        if verify_ssl is None:
+            try:
+                lower = current_api_base.lower()
+                is_local = ("localhost" in lower) or ("127.0.0.1" in lower) or ("://[::1]" in lower)
+                verify_ssl = False if is_local else True
+            except Exception:
+                verify_ssl = True
 
         base_headers = {'Accept': 'application/lightspeed.remix.service+json; version=1.0'}
         if json_payload is not None and 'Content-Type' not in (headers or {}):
@@ -87,31 +142,59 @@ class RemixAPIClient:
         effective_headers = {**base_headers, **(headers or {})}
 
         self._log_debug(f"API Request: {method.upper()} {full_url}")
-        
+
         last_error_message = "Request failed after multiple retries."
+        session = self._get_session()
 
         for attempt in range(1, retries + 1):
             try:
-                response = requests.request(method, full_url, headers=effective_headers, json=json_payload, params=params, timeout=effective_timeout, verify=verify_ssl)
+                if session is not None:
+                    response = session.request(
+                        method, full_url, headers=effective_headers, json=json_payload,
+                        params=params, timeout=effective_timeout, verify=verify_ssl,
+                    )
+                else:
+                    response = requests.request(
+                        method, full_url, headers=effective_headers, json=json_payload,
+                        params=params, timeout=effective_timeout, verify=verify_ssl,
+                    )
+
                 response_data = None
                 try:
-                    if response.content: response_data = response.json()
-                except json.JSONDecodeError:
+                    if response.content:
+                        response_data = response.json()
+                except (json.JSONDecodeError, ValueError):
                     pass
 
                 if 200 <= response.status_code < 300:
-                    return {"success": True, "status_code": response.status_code, "data": response_data if response_data is not None else response.text, "error": None}
-                else:
-                    error_details = response_data or response.text
-                    last_error_message = f"API Error (Status: {response.status_code}): {error_details}"
-                    self._log_warning(last_error_message)
-                    
+                    return {
+                        "success": True,
+                        "status_code": response.status_code,
+                        "data": response_data if response_data is not None else response.text,
+                        "error": None,
+                    }
+
+                error_details = response_data or response.text
+                last_error_message = f"API Error (Status: {response.status_code}): {error_details}"
+                self._log_warning(last_error_message)
+
+                # 4xx errors won't get better with retry (except 408/429); fail fast.
+                if 400 <= response.status_code < 500 and response.status_code not in (408, 429):
+                    return {
+                        "success": False,
+                        "status_code": response.status_code,
+                        "data": response_data,
+                        "error": last_error_message,
+                    }
+
             except requests.exceptions.RequestException as e:
                 last_error_message = f"Request Exception: {e}"
                 self._log_warning(f"Attempt {attempt} failed: {e}")
-            
+
             if attempt < retries:
-                time.sleep(delay)
+                # Exponential backoff with cap.
+                sleep_s = min(float(delay) * (2 ** (attempt - 1)), 30.0)
+                time.sleep(sleep_s)
 
         return {"success": False, "status_code": 0, "data": None, "error": last_error_message}
 
@@ -327,7 +410,15 @@ class RemixAPIClient:
             ]
         }
 
-        res = self.make_request("POST", "/ingestcraft/mass-validator/queue/material", json_payload=ingest_payload)
+        # Ingest is long-running; use a much larger timeout and fewer retries
+        # so we don't accidentally re-queue a job the server is still working on.
+        res = self.make_request(
+            "POST",
+            "/ingestcraft/mass-validator/queue/material",
+            json_payload=ingest_payload,
+            retries=1,
+            timeout=INGEST_REQUEST_TIMEOUT_SECONDS,
+        )
         if not res["success"]: return None, res.get("error")
 
         # Parse response to find output path

@@ -340,7 +340,7 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
     def exec_(self):  # noqa: N802
         try:
             return super().exec()
-        except Exception:
+        except AttributeError:
             return super().exec_()
 
 
