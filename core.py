@@ -162,9 +162,9 @@ class RemixConnectorPlugin(QObject):
 
                 # progress: switch to determinate range on first update,
                 # then forward the value. Bind through a small helper that
-                # lives on the GUI thread.
-                helper = _ProgressBridge(progress_dialog, parent=self)
-                progress_dialog._remix_helper = helper  # keep alive with the dialog
+                # lives on the GUI thread. Parent it to the dialog so it
+                # is destroyed automatically when the dialog goes away.
+                helper = _ProgressBridge(progress_dialog, parent=progress_dialog)
                 try:
                     worker.signals.progress.connect(
                         helper.on_progress, QtCore.Qt.QueuedConnection
@@ -232,12 +232,19 @@ class RemixConnectorPlugin(QObject):
     def shutdown(self, wait_ms=5000):
         """
         Cleanly tear the plugin down: stop accepting new work, close
-        progress dialogs, and wait briefly for in-flight workers.
+        progress dialogs, disconnect every still-running worker's
+        signals so they cannot fire callbacks at this (about-to-be
+        deleted) instance, and wait briefly for in-flight workers.
+
+        Returns True if the threadpool drained inside ``wait_ms``; the
+        caller should only release ``self`` (e.g. ``deleteLater``) when
+        this returns True.
         """
         self._shutting_down = True
 
         with self._workers_lock:
             dialogs = list(self._active_progress_dialogs.values())
+            workers = list(self._active_workers)
             self._active_progress_dialogs.clear()
 
         for dlg in dialogs:
@@ -250,15 +257,29 @@ class RemixConnectorPlugin(QObject):
             except Exception:
                 pass
 
+        # Sever every connection on still-running workers so they cannot
+        # call back into us (or our dialogs) after we're gone. The Worker
+        # itself emits via signals.error / signals.result / signals.finished;
+        # disconnecting the WorkerSignals QObject removes every receiver.
+        for w in workers:
+            try:
+                w.signals.disconnect()
+            except (RuntimeError, TypeError):
+                # No connections / already disconnected.
+                pass
+            except Exception:
+                pass
+
         try:
             self.threadpool.clear()  # remove queued runnables that haven't started
         except Exception:
             pass
+
+        drained = False
         try:
-            # Block briefly so we don't yank the rug out from a running worker.
-            self.threadpool.waitForDone(int(wait_ms))
+            drained = bool(self.threadpool.waitForDone(int(wait_ms)))
         except Exception:
-            pass
+            drained = False
 
         with self._workers_lock:
             self._active_workers.clear()
@@ -269,6 +290,8 @@ class RemixConnectorPlugin(QObject):
                 self.remix_api.close()
         except Exception:
             pass
+
+        return drained
 
     # --- Painter stack/channel helpers (API differences + missing-channel robustness) ---
     def _get_texture_set_stack(self, texture_set):
@@ -972,29 +995,52 @@ PLUGIN_SETTINGS = {}
 def setup_logging():
     global plugin_instance, PLUGIN_SETTINGS
     # If a previous instance exists (reload scenario), tear it down first
-    # so its workers/dialogs don't leak.
+    # so its workers/dialogs don't leak. shutdown() severs signal
+    # connections so any still-running workers cannot fire callbacks
+    # into the old instance, even when waitForDone times out.
     if plugin_instance is not None:
         try:
-            plugin_instance.shutdown(wait_ms=2000)
+            drained = bool(plugin_instance.shutdown(wait_ms=2000))
         except Exception:
-            pass
+            drained = False
+        if drained:
+            try:
+                plugin_instance.deleteLater()
+            except Exception:
+                pass
     plugin_instance = RemixConnectorPlugin()
     PLUGIN_SETTINGS = plugin_instance.settings
 
 
 def teardown():
-    """Called by the host on plugin shutdown."""
+    """
+    Called by the host on plugin shutdown.
+
+    If the threadpool drained within the wait window, schedule the
+    QObject for deletion. If it did not (e.g. a 600s ingest or 900s
+    Blender unwrap is still running), keep the QObject alive so that
+    the running worker's `run()` can complete in peace; we have already
+    severed its signal connections in ``shutdown()`` so it cannot
+    fire callbacks back into us. The instance will be collected when
+    Python drops the last reference.
+    """
     global plugin_instance
-    if plugin_instance is not None:
-        try:
-            plugin_instance.shutdown(wait_ms=5000)
-        except Exception:
-            pass
+    if plugin_instance is None:
+        return
+
+    drained = False
+    try:
+        drained = bool(plugin_instance.shutdown(wait_ms=5000))
+    except Exception:
+        drained = False
+
+    if drained:
         try:
             plugin_instance.deleteLater()
         except Exception:
             pass
-        plugin_instance = None
+
+    plugin_instance = None
 
 
 def _safe_call(handler_name):
