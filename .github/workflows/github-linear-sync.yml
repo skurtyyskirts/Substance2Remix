@@ -2,20 +2,16 @@ name: GitHub-Linear Sync
 
 on:
   issues:
-    types: [opened, edited, closed, reopened, labeled, unlabeled]
+    types: [opened, edited, closed, reopened]
   pull_request:
-    types: [opened, edited, closed, reopened, labeled, unlabeled, converted_to_draft, ready_for_review]
-  issue_comment:
-    types: [created, edited, deleted]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
+    types: [opened, edited, closed, reopened, converted_to_draft, ready_for_review]
 
 jobs:
   sync-to-linear:
     runs-on: ubuntu-latest
     if: github.event.action != 'deleted'
     steps:
-      - name: Sync Issue/PR to Linear
+      - name: Sync to Linear
         uses: actions/github-script@v7
         env:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
@@ -23,136 +19,76 @@ jobs:
         with:
           script: |
             const axios = require('axios');
-            const github = require('@actions/github');
-
-            if (!process.env.LINEAR_API_KEY) {
-              console.log('❌ LINEAR_API_KEY not configured');
+            
+            const apiKey = process.env.LINEAR_API_KEY;
+            const teamId = process.env.LINEAR_TEAM_ID;
+            
+            if (!apiKey) {
+              console.log('⏭️  Linear API key not configured, skipping sync');
               return;
             }
-
-            const linearApi = axios.create({
-              baseURL: 'https://api.linear.app/graphql',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${process.env.LINEAR_API_KEY}`
-              }
-            });
-
-            const context = github.context;
+            
             const issue = context.payload.issue || context.payload.pull_request;
             const repo = context.repo;
             const isPR = !!context.payload.pull_request;
-
-            if (!issue) return;
-
-            const itemType = isPR ? 'PR' : 'Issue';
-            const itemId = issue.number;
-            const ghUrl = issue.html_url;
-            const repoKey = `${repo.owner}/${repo.repo}`;
-            const issueKey = `${repoKey}#${itemId}`;
-
-            // Map GitHub status to Linear status
-            const getLinearState = (ghIssue) => {
-              if (isPR) {
-                if (ghIssue.draft) return 'backlog';
-                if (ghIssue.state === 'closed') return 'done';
-                return 'in_progress';
-              }
-              if (ghIssue.state === 'closed') return 'done';
-              return 'backlog';
-            };
-
-            const linearState = getLinearState(issue);
-            const title = `[${isPR ? 'PR' : 'Issue'}] ${repo.repo}#${itemId}: ${issue.title}`;
-            const description = `${issue.body || '*(no description)*'}\n\n---\n**GitHub**: [${issueKey}](${ghUrl})\n**Type**: ${itemType}${isPR ? `\n**Draft**: ${issue.draft}` : ''}`;
-
-            try {
-              // Search for existing Linear issue
-              const query = `
-                query {
-                  issues(filter: {
-                    description: {contains: "${ghUrl}"}
-                  }, first: 1) {
-                    nodes {
-                      id
-                      identifier
-                      state {
-                        type
-                      }
-                    }
-                  }
-                }
-              `;
-
-              const searchResp = await linearApi.post('', { query });
-              const existingIssue = searchResp.data?.data?.issues?.nodes?.[0];
-
-              if (existingIssue) {
-                // Update existing
-                const updateMutation = `
-                  mutation {
-                    issueUpdate(id: "${existingIssue.id}", input: {
-                      title: "${title.replace(/"/g, '\\"').replace(/\n/g, ' ')}",
-                      description: "${description.replace(/"/g, '\\"')}",
-                      stateId: "${linearState}"
-                    }) {
-                      issue {
-                        id
-                        identifier
-                      }
-                    }
-                  }
-                `;
-
-                const updateResp = await linearApi.post('', { mutation: updateMutation });
-                const updated = updateResp.data?.data?.issueUpdate?.issue;
-                if (updated) {
-                  console.log(`✅ Updated Linear ${updated.identifier} for ${itemType} ${issueKey}`);
-                }
-              } else {
-                // Create new
-                const createMutation = `
-                  mutation {
-                    issueCreate(input: {
-                      title: "${title.replace(/"/g, '\\"').replace(/\n/g, ' ')}",
-                      description: "${description.replace(/"/g, '\\"')}",
-                      teamId: "${process.env.LINEAR_TEAM_ID}",
-                      stateId: "${linearState}"
-                    }) {
-                      issue {
-                        id
-                        identifier
-                        url
-                      }
-                    }
-                  }
-                `;
-
-                const createResp = await linearApi.post('', { mutation: createMutation });
-                const created = createResp.data?.data?.issueCreate?.issue;
-                
-                if (created) {
-                  // Comment on GitHub with Linear link
-                  await github.rest.issues.createComment({
-                    owner: repo.owner,
-                    repo: repo.repo,
-                    issue_number: itemId,
-                    body: `🔗 **Synced to Linear**: [${created.identifier}](${created.url})`
-                  });
-                  console.log(`✅ Created Linear ${created.identifier} for ${itemType} ${issueKey}`);
-                } else {
-                  console.error('❌ Failed to create Linear issue:', createResp.data?.errors);
-                }
-              }
-            } catch (error) {
-              console.error(`❌ Error syncing ${itemType}:`, error.response?.data?.errors || error.message);
+            
+            if (!issue) {
+              console.log('⏭️  No issue or PR found, skipping');
+              return;
             }
-
-  sync-status-to-github:
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request_review' && github.event.action == 'edited'
-    steps:
-      - name: Check Linear status updates
-        run: |
-          echo "Monitoring Linear status updates for GitHub sync"
-          # This will be enhanced with webhook integration from Linear
+            
+            const itemType = isPR ? 'PR' : 'Issue';
+            const linearClient = axios.create({
+              baseURL: 'https://api.linear.app/graphql',
+              headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+              }
+            });
+            
+            async function syncToLinear() {
+              try {
+                const state = isPR 
+                  ? (issue.draft ? 'backlog' : (issue.state === 'closed' ? 'done' : 'in_progress'))
+                  : (issue.state === 'closed' ? 'done' : 'backlog');
+                  
+                const title = `[${repo.repo}] ${itemType}#${issue.number}: ${issue.title}`;
+                const description = `${issue.body || '(no description)'}\n\n---\n[GitHub Link](${issue.html_url})`;
+                
+                // Search for existing Linear issue by GitHub URL
+                const searchQuery = {
+                  query: `query { issues(filter: { description: { contains: "${issue.html_url}" } }, first: 1) { nodes { id identifier } } }`
+                };
+                
+                const searchResp = await linearClient.post('', searchQuery);
+                const existing = searchResp.data?.data?.issues?.nodes?.[0];
+                
+                if (existing) {
+                  console.log(`✅ Found existing Linear issue ${existing.identifier}`);
+                } else {
+                  // Create new Linear issue
+                  const createQuery = {
+                    mutation: `mutation { issueCreate(input: { teamId: "${teamId}", title: "${title.replace(/"/g, '\\"')}", description: "${description.replace(/"/g, '\\"')}", stateId: "${state}" }) { issue { id identifier url } } }`
+                  };
+                  
+                  const createResp = await linearClient.post('', createQuery);
+                  const created = createResp.data?.data?.issueCreate?.issue;
+                  
+                  if (created) {
+                    await github.rest.issues.createComment({
+                      owner: repo.owner,
+                      repo: repo.repo,
+                      issue_number: issue.number,
+                      body: `🔗 Synced to Linear: [${created.identifier}](${created.url})`
+                    });
+                    console.log(`✅ Created Linear issue ${created.identifier}`);
+                  } else {
+                    console.log('⚠️  No issue created');
+                  }
+                }
+              } catch (error) {
+                console.log('⚠️  Sync skipped:', error.message);
+              }
+            }
+            
+            await syncToLinear();
