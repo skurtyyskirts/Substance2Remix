@@ -37,6 +37,16 @@ jobs:
             
             const itemType = isPR ? 'PR' : 'Issue';
             
+            function escapeGraphQL(str) {
+              if (!str) return '';
+              return str
+                .replace(/\\/g, '\\\\')
+                .replace(/"/g, '\\"')
+                .replace(/\n/g, '\\n')
+                .replace(/\r/g, '\\r')
+                .replace(/\t/g, '\\t');
+            }
+            
             async function makeLinearRequest(query) {
               const response = await fetch('https://api.linear.app/graphql', {
                 method: 'POST',
@@ -74,15 +84,35 @@ jobs:
                 const existing = searchResp.data?.issues?.nodes?.[0];
                 
                 if (existing) {
-                  console.log(\`✅ Found existing Linear issue \${existing.identifier}\`);
+                  // Update existing Linear issue
+                  const updateResp = await makeLinearRequest(\`
+                    mutation {
+                      issueUpdate(id: "\${existing.id}", input: {
+                        title: "\${escapeGraphQL(title)}",
+                        description: "\${escapeGraphQL(description)}"
+                      }) {
+                        issue {
+                          id
+                          identifier
+                        }
+                      }
+                    }
+                  \`);
+                  
+                  const updated = updateResp.data?.issueUpdate?.issue;
+                  if (updated) {
+                    console.log(\`✅ Updated Linear issue \${updated.identifier}\`);
+                  } else {
+                    console.log('⚠️  Update failed:', updateResp.errors?.[0]?.message);
+                  }
                 } else {
                   // Create new Linear issue
                   const createResp = await makeLinearRequest(\`
                     mutation {
                       issueCreate(input: {
                         teamId: "\${teamId}",
-                        title: "\${title.replace(/"/g, '\\\\"')}"
-                        description: "\${description.replace(/"/g, '\\\\"')}"
+                        title: "\${escapeGraphQL(title)}",
+                        description: "\${escapeGraphQL(description)}"
                       }) {
                         issue {
                           id
