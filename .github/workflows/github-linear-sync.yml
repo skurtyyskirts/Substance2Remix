@@ -1,0 +1,158 @@
+name: GitHub-Linear Sync
+
+on:
+  issues:
+    types: [opened, edited, closed, reopened, labeled, unlabeled]
+  pull_request:
+    types: [opened, edited, closed, reopened, labeled, unlabeled, converted_to_draft, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+jobs:
+  sync-to-linear:
+    runs-on: ubuntu-latest
+    if: github.event.action != 'deleted'
+    steps:
+      - name: Sync Issue/PR to Linear
+        uses: actions/github-script@v7
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_TEAM_ID: ${{ secrets.LINEAR_TEAM_ID }}
+        with:
+          script: |
+            const axios = require('axios');
+            const github = require('@actions/github');
+
+            if (!process.env.LINEAR_API_KEY) {
+              console.log('❌ LINEAR_API_KEY not configured');
+              return;
+            }
+
+            const linearApi = axios.create({
+              baseURL: 'https://api.linear.app/graphql',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.LINEAR_API_KEY}`
+              }
+            });
+
+            const context = github.context;
+            const issue = context.payload.issue || context.payload.pull_request;
+            const repo = context.repo;
+            const isPR = !!context.payload.pull_request;
+
+            if (!issue) return;
+
+            const itemType = isPR ? 'PR' : 'Issue';
+            const itemId = issue.number;
+            const ghUrl = issue.html_url;
+            const repoKey = `${repo.owner}/${repo.repo}`;
+            const issueKey = `${repoKey}#${itemId}`;
+
+            // Map GitHub status to Linear status
+            const getLinearState = (ghIssue) => {
+              if (isPR) {
+                if (ghIssue.draft) return 'backlog';
+                if (ghIssue.state === 'closed') return 'done';
+                return 'in_progress';
+              }
+              if (ghIssue.state === 'closed') return 'done';
+              return 'backlog';
+            };
+
+            const linearState = getLinearState(issue);
+            const title = `[${isPR ? 'PR' : 'Issue'}] ${repo.repo}#${itemId}: ${issue.title}`;
+            const description = `${issue.body || '*(no description)*'}\n\n---\n**GitHub**: [${issueKey}](${ghUrl})\n**Type**: ${itemType}${isPR ? `\n**Draft**: ${issue.draft}` : ''}`;
+
+            try {
+              // Search for existing Linear issue
+              const query = `
+                query {
+                  issues(filter: {
+                    description: {contains: "${ghUrl}"}
+                  }, first: 1) {
+                    nodes {
+                      id
+                      identifier
+                      state {
+                        type
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const searchResp = await linearApi.post('', { query });
+              const existingIssue = searchResp.data?.data?.issues?.nodes?.[0];
+
+              if (existingIssue) {
+                // Update existing
+                const updateMutation = `
+                  mutation {
+                    issueUpdate(id: "${existingIssue.id}", input: {
+                      title: "${title.replace(/"/g, '\\"').replace(/\n/g, ' ')}",
+                      description: "${description.replace(/"/g, '\\"')}",
+                      stateId: "${linearState}"
+                    }) {
+                      issue {
+                        id
+                        identifier
+                      }
+                    }
+                  }
+                `;
+
+                const updateResp = await linearApi.post('', { mutation: updateMutation });
+                const updated = updateResp.data?.data?.issueUpdate?.issue;
+                if (updated) {
+                  console.log(`✅ Updated Linear ${updated.identifier} for ${itemType} ${issueKey}`);
+                }
+              } else {
+                // Create new
+                const createMutation = `
+                  mutation {
+                    issueCreate(input: {
+                      title: "${title.replace(/"/g, '\\"').replace(/\n/g, ' ')}",
+                      description: "${description.replace(/"/g, '\\"')}",
+                      teamId: "${process.env.LINEAR_TEAM_ID}",
+                      stateId: "${linearState}"
+                    }) {
+                      issue {
+                        id
+                        identifier
+                        url
+                      }
+                    }
+                  }
+                `;
+
+                const createResp = await linearApi.post('', { mutation: createMutation });
+                const created = createResp.data?.data?.issueCreate?.issue;
+                
+                if (created) {
+                  // Comment on GitHub with Linear link
+                  await github.rest.issues.createComment({
+                    owner: repo.owner,
+                    repo: repo.repo,
+                    issue_number: itemId,
+                    body: `🔗 **Synced to Linear**: [${created.identifier}](${created.url})`
+                  });
+                  console.log(`✅ Created Linear ${created.identifier} for ${itemType} ${issueKey}`);
+                } else {
+                  console.error('❌ Failed to create Linear issue:', createResp.data?.errors);
+                }
+              }
+            } catch (error) {
+              console.error(`❌ Error syncing ${itemType}:`, error.response?.data?.errors || error.message);
+            }
+
+  sync-status-to-github:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request_review' && github.event.action == 'edited'
+    steps:
+      - name: Check Linear status updates
+        run: |
+          echo "Monitoring Linear status updates for GitHub sync"
+          # This will be enhanced with webhook integration from Linear
