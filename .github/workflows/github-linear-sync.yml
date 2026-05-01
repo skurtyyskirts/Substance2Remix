@@ -85,11 +85,11 @@ jobs:
                 
                 if (existing) {
                   // Update existing Linear issue
-                  const updateResp = await makeLinearRequest(\`
+                  const updateResp = await makeLinearRequest(`
                     mutation {
-                      issueUpdate(id: "\${existing.id}", input: {
-                        title: "\${escapeGraphQL(title)}",
-                        description: "\${escapeGraphQL(description)}"
+                      issueUpdate(id: "${existing.id}", input: {
+                        title: "${escapeGraphQL(title)}",
+                        description: "${escapeGraphQL(description)}"
                       }) {
                         issue {
                           id
@@ -97,22 +97,22 @@ jobs:
                         }
                       }
                     }
-                  \`);
+                  `);
                   
                   const updated = updateResp.data?.issueUpdate?.issue;
                   if (updated) {
-                    console.log(\`✅ Updated Linear issue \${updated.identifier}\`);
+                    console.log(`✅ Updated Linear issue ${updated.identifier}`);
                   } else {
                     console.log('⚠️  Update failed:', updateResp.errors?.[0]?.message);
                   }
                 } else {
                   // Create new Linear issue
-                  const createResp = await makeLinearRequest(\`
+                  const createResp = await makeLinearRequest(`
                     mutation {
                       issueCreate(input: {
-                        teamId: "\${teamId}",
-                        title: "\${escapeGraphQL(title)}",
-                        description: "\${escapeGraphQL(description)}"
+                        teamId: "${teamId}",
+                        title: "${escapeGraphQL(title)}",
+                        description: "${escapeGraphQL(description)}"
                       }) {
                         issue {
                           id
@@ -121,7 +121,7 @@ jobs:
                         }
                       }
                     }
-                  \`);
+                  `);
                   
                   const created = createResp.data?.issueCreate?.issue;
                   
@@ -130,9 +130,9 @@ jobs:
                       owner: repo.owner,
                       repo: repo.repo,
                       issue_number: issue.number,
-                      body: \`🔗 Synced to Linear: [\${created.identifier}](\${created.url})\`
+                      body: `🔗 Synced to Linear: [${created.identifier}](${created.url})`
                     });
-                    console.log(\`✅ Created Linear issue \${created.identifier}\`);
+                    console.log(`✅ Created Linear issue ${created.identifier}`);
                   } else {
                     console.log('⚠️  Creation failed:', createResp.errors?.[0]?.message);
                   }
