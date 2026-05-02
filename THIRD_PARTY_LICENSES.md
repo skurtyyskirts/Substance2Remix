@@ -29,13 +29,22 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-**Action required:** Run `texconv.exe /?` to confirm the exact version string and update
-this file with the build date/version. Match against a released tag from
-[DirectXTex releases](https://github.com/microsoft/DirectXTex/releases).
+**Version:** Run `texconv.exe /?` to confirm the exact version string and match
+against a released tag from [DirectXTex releases](https://github.com/microsoft/DirectXTex/releases).
+Update this file with the build date/version once confirmed.
 
 ---
 
 ## requests (Python)
 
 **License:** Apache License 2.0  
-Installed via pip at runtime; not bundled with this plugin.
+**Bundled at:** `_vendor/requests/` (loaded via `dependency_manager.ensure_dependencies_installed()`)  
+Not installed via pip at runtime — the plugin ships its own vendored copy.
+
+---
+
+## Pillow (Python)
+
+**License:** HPND (Historical Permission Notice and Disclaimer)  
+May be bundled under `_vendor/` — check `dependency_manager.py` for the full
+list of vendored packages and verify this file covers all of them.

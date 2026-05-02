@@ -4,9 +4,20 @@ import sys
 import unittest
 from unittest.mock import patch, MagicMock
 
+# Inject a mock requests module before importing remix_api so these tests run
+# in environments where requests is not installed (e.g. minimal CI images).
+# remix_api treats requests as optional and guards all usage behind _get_session().
+_req_mock = MagicMock()
+_ConnErr = type("ConnectionError", (OSError,), {})
+_Timeout = type("Timeout", (OSError,), {})
+_req_mock.exceptions.ConnectionError = _ConnErr
+_req_mock.exceptions.Timeout = _Timeout
+_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
+sys.modules.setdefault("requests", _req_mock)
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from remix_api import RemixAPIClient
+from remix_api import RemixAPIClient  # noqa: E402
 
 
 def _make_client(base_url="http://localhost:8011"):
@@ -23,54 +34,57 @@ def _mock_response(status=200, body=None):
     return r
 
 
+def _mock_session():
+    """Return a mock session that make_request can call .request() on."""
+    return MagicMock()
+
+
 class TestTLSPolicy(unittest.TestCase):
     """make_request must apply verify=False for loopback and verify=True for remote."""
 
     def _capture_verify(self, base_url):
         client = _make_client(base_url)
-        s = client._get_session()
-        captured = {}
-        mock_resp = _mock_response()
-        with patch.object(s, "request", return_value=mock_resp) as m:
+        sess = _mock_session()
+        sess.request.return_value = _mock_response()
+        with patch.object(client, "_get_session", return_value=sess):
             client.make_request("GET", "/test", retries=1)
-            _, kwargs = m.call_args
-            captured["verify"] = kwargs.get("verify")
-        return captured
+        _, kwargs = sess.request.call_args
+        return kwargs.get("verify")
 
     def test_localhost_uses_verify_false(self):
-        result = self._capture_verify("http://localhost:8011")
-        self.assertFalse(result["verify"])
+        self.assertFalse(self._capture_verify("http://localhost:8011"))
 
     def test_127_uses_verify_false(self):
-        result = self._capture_verify("http://127.0.0.1:8011")
-        self.assertFalse(result["verify"])
+        self.assertFalse(self._capture_verify("http://127.0.0.1:8011"))
+
+    def test_ipv6_loopback_uses_verify_false(self):
+        self.assertFalse(self._capture_verify("http://[::1]:8011"))
 
     def test_remote_host_uses_verify_true(self):
-        result = self._capture_verify("https://remix.example.com:8011")
-        self.assertTrue(result["verify"])
+        self.assertTrue(self._capture_verify("https://remix.example.com:8011"))
 
     def test_explicit_verify_true_overrides_localhost(self):
         client = _make_client("http://localhost:8011")
-        s = client._get_session()
-        mock_resp = _mock_response()
-        with patch.object(s, "request", return_value=mock_resp) as m:
+        sess = _mock_session()
+        sess.request.return_value = _mock_response()
+        with patch.object(client, "_get_session", return_value=sess):
             client.make_request("GET", "/test", retries=1, verify_ssl=True)
-            _, kwargs = m.call_args
-            self.assertTrue(kwargs.get("verify"))
+        _, kwargs = sess.request.call_args
+        self.assertTrue(kwargs.get("verify"))
 
 
 class TestRetryLogic(unittest.TestCase):
     def test_retries_on_connection_error(self):
-        import requests as req_lib
         client = _make_client()
-        s = client._get_session()
+        sess = _mock_session()
         call_count = [0]
 
         def side_effect(*a, **kw):
             call_count[0] += 1
-            raise req_lib.exceptions.ConnectionError("refused")
+            raise _ConnErr("refused")
 
-        with patch.object(s, "request", side_effect=side_effect):
+        sess.request.side_effect = side_effect
+        with patch.object(client, "_get_session", return_value=sess):
             with patch("time.sleep"):
                 result = client.make_request("GET", "/test", retries=3)
         self.assertEqual(call_count[0], 3)
@@ -78,7 +92,7 @@ class TestRetryLogic(unittest.TestCase):
 
     def test_no_retry_on_400(self):
         client = _make_client()
-        s = client._get_session()
+        sess = _mock_session()
         call_count = [0]
 
         def side_effect(*a, **kw):
@@ -87,14 +101,15 @@ class TestRetryLogic(unittest.TestCase):
             r.json.side_effect = ValueError
             return r
 
-        with patch.object(s, "request", side_effect=side_effect):
+        sess.request.side_effect = side_effect
+        with patch.object(client, "_get_session", return_value=sess):
             result = client.make_request("GET", "/test", retries=3)
         self.assertEqual(call_count[0], 1, "4xx must not retry")
         self.assertFalse(result["success"])
 
     def test_retries_on_429(self):
         client = _make_client()
-        s = client._get_session()
+        sess = _mock_session()
         call_count = [0]
 
         def side_effect(*a, **kw):
@@ -103,15 +118,17 @@ class TestRetryLogic(unittest.TestCase):
             r.json.side_effect = ValueError
             return r
 
-        with patch.object(s, "request", side_effect=side_effect):
+        sess.request.side_effect = side_effect
+        with patch.object(client, "_get_session", return_value=sess):
             with patch("time.sleep"):
                 result = client.make_request("GET", "/test", retries=3)
         self.assertGreater(call_count[0], 1, "429 should trigger retries")
 
     def test_success_on_first_attempt(self):
         client = _make_client()
-        s = client._get_session()
-        with patch.object(s, "request", return_value=_mock_response(200)):
+        sess = _mock_session()
+        sess.request.return_value = _mock_response(200)
+        with patch.object(client, "_get_session", return_value=sess):
             result = client.make_request("GET", "/test")
         self.assertTrue(result["success"])
         self.assertEqual(result["status_code"], 200)
@@ -120,16 +137,22 @@ class TestRetryLogic(unittest.TestCase):
 class TestPing(unittest.TestCase):
     def test_ping_success(self):
         client = _make_client()
-        s = client._get_session()
-        with patch.object(s, "request", return_value=_mock_response(200)):
+        sess = _mock_session()
+        sess.request.return_value = _mock_response(200)
+        with patch.object(client, "_get_session", return_value=sess):
             ok, msg = client.ping()
         self.assertTrue(ok)
+        # Verify ping targets the expected stagecraft project endpoint
+        call_args = sess.request.call_args
+        positional = call_args[0] if call_args[0] else ()
+        url = positional[1] if len(positional) > 1 else call_args[1].get("url", "")
+        self.assertIn("/stagecraft/project/", url)
 
     def test_ping_failure(self):
-        import requests as req_lib
         client = _make_client()
-        s = client._get_session()
-        with patch.object(s, "request", side_effect=req_lib.exceptions.ConnectionError("refused")):
+        sess = _mock_session()
+        sess.request.side_effect = _ConnErr("refused")
+        with patch.object(client, "_get_session", return_value=sess):
             ok, msg = client.ping()
         self.assertFalse(ok)
 

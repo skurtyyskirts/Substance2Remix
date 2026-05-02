@@ -5,14 +5,14 @@ Substance Painter plugin bridging Adobe Substance 3D Painter with NVIDIA RTX Rem
 ## Module Map (post-v0.5.0)
 
 | File | Purpose |
-|------|---------|
+|------|-------|
 | `__init__.py` | Plugin registration entry; loads `core.py` via `_load_core_module()` |
 | `core.py` | Central orchestration (~45 KB); `RemixConnectorPlugin` class |
 | `remix_api.py` | REST client for RTX Remix Toolkit (~26 KB); `RemixAPIClient` class |
 | `texture_processor.py` | DDS pipeline + texconv/Blender invocation (~11 KB) |
 | `painter_controller.py` | Substance Painter API wrapper |
 | `async_utils.py` | Qt worker thread + signal plumbing |
-| `dependency_manager.py` | Runtime dependency loading |
+| `dependency_manager.py` | Runtime dependency loading from `_vendor/` |
 | `diagnostics_dialog.py` | In-Painter diagnostics panel |
 | `settings_dialog.py` | Tabbed settings UI |
 | `settings_schema.py` | Settings key definitions and defaults |
@@ -30,8 +30,8 @@ Substance Painter plugin bridging Adobe Substance 3D Painter with NVIDIA RTX Rem
 ## Network / TLS Policy
 
 All HTTP calls go through `RemixAPIClient.make_request()`. TLS verification:
-- **Disabled** (`verify=False`) for `localhost` / `127.0.0.1` / `[::1]` — Remix runs locally over HTTP
-- **Enabled** (`verify=True`) for any non-loopback host
+- **Disabled** (`verify=False`) when the URL contains `localhost`, `127.0.0.1`, or `[::1]` (substring match — note: a URL like `https://localhost.evil.com` also matches; tighten host parsing if this client is ever exposed to untrusted input)
+- **Enabled** (`verify=True`) for all other hosts
 
 Do NOT add direct `requests.get/post` calls outside `make_request()`. All new endpoints
 must use the method to preserve retry logic and TLS policy.
