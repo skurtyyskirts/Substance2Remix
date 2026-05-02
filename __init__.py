@@ -1,7 +1,6 @@
 import importlib
-import os
-import sys
 import traceback
+
 from . import dependency_manager
 from .plugin_info import PLUGIN_NAME, PLUGIN_DESCRIPTION
 
@@ -9,39 +8,42 @@ from .plugin_info import PLUGIN_NAME, PLUGIN_DESCRIPTION
 plugin_name = PLUGIN_NAME
 plugin_description = PLUGIN_DESCRIPTION
 
-# --- Global Variables ---
+# --- Module state ---
 remix_core = None
 remix_actions = []
 remix_menu = None
+_fallback_actions_added = False
+
 
 def _load_core_module():
     """
     Loads or reloads the main logic from core.py.
-    This function will be called after dependencies are checked.
+    Called after dependency setup. On reload, the previous plugin
+    instance's shutdown() runs inside core.setup_logging().
     """
     global remix_core
-    from . import core
-
     try:
-        if 'remix_core' in globals() and remix_core:
-            remix_core = importlib.reload(core)
-            print(f"[RemixConnector] Successfully reloaded 'core.py' module.")
+        if remix_core is not None:
+            remix_core = importlib.reload(remix_core)
+            print("[RemixConnector] Reloaded 'core.py'.")
         else:
+            from . import core
             remix_core = core
-            print(f"[RemixConnector] Successfully loaded 'core.py' module for the first time.")
+            print("[RemixConnector] Loaded 'core.py'.")
 
         if hasattr(remix_core, 'setup_logging') and callable(remix_core.setup_logging):
             remix_core.setup_logging()
         else:
-            print("[RemixConnector] WARNING: Core module is missing a callable 'setup_logging' function.")
-        
+            print("[RemixConnector] WARNING: core module is missing a callable 'setup_logging' function.")
+
         return True
 
     except Exception as e:
-        print(f"[RemixConnector] CRITICAL ERROR: Failed to load core.py. The plugin cannot run. Error: {e}")
+        print(f"[RemixConnector] CRITICAL ERROR: Failed to load core.py: {e}")
         traceback.print_exc()
         remix_core = None
         return False
+
 
 def create_plugin_actions():
     """
@@ -52,7 +54,8 @@ def create_plugin_actions():
 
     try:
         from .qt_utils import QAction
-        if not QAction: raise ImportError("QAction not found in qt_utils")
+        if not QAction:
+            raise ImportError("QAction not found in qt_utils")
     except ImportError:
         print("[RemixConnector] ERROR: Could not import QAction from qt_utils. Cannot create UI.")
         return
@@ -67,51 +70,59 @@ def create_plugin_actions():
         {"text": "About...", "handler": "handle_about"},
     ]
 
-    import substance_painter.ui
-
     for adef in action_definitions:
         try:
-            if hasattr(remix_core, adef["handler"]):
-                action = QAction(adef["text"], None)
-                handler_func = getattr(remix_core, adef["handler"])
-                action.triggered.connect(handler_func)
-                remix_actions.append(action)
-                print(f"[RemixConnector] Action '{adef['text']}' created and connected.")
-            else:
-                print(f"[RemixConnector] ERROR: Handler function '{adef['handler']}' not found in core module!")
+            handler_func = getattr(remix_core, adef["handler"], None)
+            if not callable(handler_func):
+                print(f"[RemixConnector] ERROR: Handler '{adef['handler']}' missing.")
+                continue
+            action = QAction(adef["text"], None)
+            action.triggered.connect(handler_func)
+            remix_actions.append(action)
         except Exception as e:
             print(f"[RemixConnector] Failed to create action '{adef['text']}': {e}")
 
+
 def add_actions_to_menu():
     """
-    Adds the created actions to a new 'Substance2Remix' menu in the main UI.
+    Adds the created actions to a new menu in the main UI, or falls
+    back to the Plugins menu when QMenu cannot be created.
     """
-    global remix_menu
+    global remix_menu, _fallback_actions_added
     try:
         import substance_painter.ui
+    except ImportError:
+        print("[RemixConnector] ERROR: substance_painter.ui not available; skipping menu setup.")
+        return
+
+    QMenu = None
+    try:
         from .qt_utils import QtWidgets
         QMenu = QtWidgets.QMenu if QtWidgets else None
     except ImportError:
         QMenu = None
 
     if not QMenu:
-        print("[RemixConnector] ERROR: Could not import QMenu. Adding actions to Plugins menu fallback.")
+        print("[RemixConnector] WARN: QMenu unavailable; using Plugins menu fallback.")
         target_menu = substance_painter.ui.ApplicationMenu.Plugins
         for action in remix_actions:
-            substance_painter.ui.add_action(target_menu, action)
+            try:
+                substance_painter.ui.add_action(target_menu, action)
+            except Exception as e:
+                print(f"[RemixConnector] Failed to add fallback action: {e}")
+        _fallback_actions_added = True
         return
 
     try:
         remix_menu = QMenu(plugin_name)
         for action in remix_actions:
             remix_menu.addAction(action)
-
         substance_painter.ui.add_menu(remix_menu)
-        print(f"[RemixConnector] Added {len(remix_actions)} action(s) to the 'Substance2Remix' menu.")
-
+        print(f"[RemixConnector] Added {len(remix_actions)} action(s) to '{plugin_name}' menu.")
     except Exception as e:
         print(f"[RemixConnector] CRITICAL: Failed to create or add submenu: {e}")
         traceback.print_exc()
+
 
 # === Substance Painter Plugin Entry Points ===
 
@@ -125,7 +136,8 @@ def start_plugin():
             substance_painter.ui.display_message(
                 "Remix Connector: Failed to install/load dependencies. Check logs."
             )
-        except: pass
+        except Exception:
+            pass
         return
 
     if _load_core_module():
@@ -138,14 +150,36 @@ def start_plugin():
 
 def close_plugin():
     """Called by Substance Painter when the plugin is stopped."""
-    global remix_actions, remix_menu
+    global remix_actions, remix_menu, remix_core, _fallback_actions_added
+
+    # 1) Tear down the plugin instance (waits for workers, closes dialogs).
+    try:
+        if remix_core is not None and hasattr(remix_core, 'teardown'):
+            remix_core.teardown()
+    except Exception as e:
+        print(f"[RemixConnector] Error tearing down core: {e}")
+
+    # 2) Remove UI elements.
     try:
         import substance_painter.ui
-        if remix_menu:
-            substance_painter.ui.delete_ui_element(remix_menu)
-        
-        remix_actions.clear()
-        remix_menu = None
-        print("[RemixConnector] Plugin closed and UI cleaned up.")
+        if remix_menu is not None:
+            try:
+                substance_painter.ui.delete_ui_element(remix_menu)
+            except Exception as e:
+                print(f"[RemixConnector] delete_ui_element(menu) failed: {e}")
+        if _fallback_actions_added:
+            for action in remix_actions:
+                try:
+                    substance_painter.ui.delete_ui_element(action)
+                except Exception:
+                    pass
+    except ImportError:
+        pass
     except Exception as e:
-        print(f"[RemixConnector] Error during plugin close: {e}")
+        print(f"[RemixConnector] UI cleanup error: {e}")
+
+    # 3) Drop strong refs so QActions can be collected.
+    remix_actions.clear()
+    remix_menu = None
+    _fallback_actions_added = False
+    print("[RemixConnector] Plugin closed and UI cleaned up.")

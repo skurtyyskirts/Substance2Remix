@@ -36,15 +36,16 @@ class DiagnosticsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
     def _copy(self):
         try:
             cb = QtWidgets.QApplication.clipboard()
-            cb.setText(self.text_edit.toPlainText())
+            if cb is not None:
+                cb.setText(self.text_edit.toPlainText())
         except Exception:
             pass
 
-    # PySide6 compatibility: core calls exec_() in some places.
+    # PySide6 compatibility: callers use exec_() in some places.
     def exec_(self):  # noqa: N802
         try:
             return super().exec()
-        except Exception:
+        except AttributeError:
             return super().exec_()
 
 

@@ -6,6 +6,7 @@ import traceback
 import time
 import shutil
 import re
+import threading
 
 # Local imports
 from . import dependency_manager
@@ -47,32 +48,61 @@ PBR_TO_MDL_INPUT_MAP = {
     "opacity": "opacity_texture",
 }
 
+class _ProgressBridge(QObject):
+    """
+    Tiny QObject that lives on the GUI thread and forwards progress
+    integers to a QProgressDialog. Existing only as a QObject is what
+    causes Qt to use a queued connection from worker threads.
+    """
+    def __init__(self, dialog, parent=None):
+        super().__init__(parent)
+        self._dialog = dialog
+
+    @Slot(int)
+    def on_progress(self, pct):
+        dlg = self._dialog
+        if dlg is None:
+            return
+        try:
+            if dlg.maximum() == 0:
+                dlg.setRange(0, 100)
+            dlg.setValue(int(pct))
+        except Exception:
+            pass
+
+
 class RemixConnectorPlugin(QObject):
     def __init__(self):
         super().__init__()
         self._active_workers = set()
         self._active_progress_dialogs = {}
+        self._workers_lock = threading.Lock()
+        self._log_lock = threading.Lock()
+        self._shutting_down = False
         self._log_file_path = LOG_FILE_PATH
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
-        except Exception:
+        except OSError:
             pass
 
         self.settings = {}
         self.load_settings()
-        
+
         self.logger_adapter = {
             'info': self.log_info,
             'debug': self.log_debug,
             'warning': self.log_warning,
             'error': self.log_error
         }
-        
+
         self.remix_api = RemixAPIClient(self.get_settings, self.logger_adapter)
         self.texture_processor = TextureProcessor(self.get_settings, self.logger_adapter, self.display_message)
         self.painter_controller = PainterController(self.logger_adapter)
-        
+
+        # Use a dedicated thread pool so we can wait for our own workers
+        # at shutdown without blocking on unrelated Painter tasks.
         self.threadpool = QThreadPool()
+        self.threadpool.setMaxThreadCount(max(2, QThreadPool.globalInstance().maxThreadCount()))
 
     # --- Worker lifecycle (prevents GC / improves reliability when app is unfocused) ---
     def _get_ui_parent(self):
@@ -85,14 +115,17 @@ class RemixConnectorPlugin(QObject):
     def _start_worker(self, worker, on_result=None, title=None, show_progress=True):
         """
         Starts a Worker and keeps a strong reference until it finishes.
-        This prevents intermittent dropouts due to Python GC/Qt ownership nuances.
+        Connections to UI objects use auto-routed (queued) connections by
+        targeting QObject methods, so worker threads never touch Qt
+        widgets directly.
         """
-        try:
-            self._active_workers.add(worker)
-        except Exception:
-            pass
+        if self._shutting_down:
+            self.log_warning("Plugin is shutting down; refusing to start new worker.")
+            return
 
-        # Optional progress dialog (uses Worker's status/progress signals)
+        with self._workers_lock:
+            self._active_workers.add(worker)
+
         progress_dialog = None
         if show_progress and QtWidgets and QtCore:
             try:
@@ -103,58 +136,162 @@ class RemixConnectorPlugin(QObject):
                 progress_dialog.setAutoClose(True)
                 progress_dialog.setAutoReset(True)
                 progress_dialog.setValue(0)
+                # Hide-only: we do not propagate cancel into the worker.
                 try:
                     progress_dialog.canceled.connect(progress_dialog.hide)
-                except Exception:
+                except (AttributeError, TypeError):
                     pass
+                # Free the QObject deterministically when the dialog closes.
+                try:
+                    progress_dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
+                except (AttributeError, TypeError):
+                    pass
+
                 progress_dialog.show()
-                self._active_progress_dialogs[worker] = progress_dialog
+                with self._workers_lock:
+                    self._active_progress_dialogs[worker] = progress_dialog
 
-                def _on_status(text, dlg=progress_dialog):
-                    try:
-                        dlg.setLabelText(str(text))
-                    except Exception:
-                        pass
+                # Connect signals directly to QObject methods so Qt routes
+                # them via QueuedConnection across threads.
+                try:
+                    worker.signals.status.connect(
+                        progress_dialog.setLabelText, QtCore.Qt.QueuedConnection
+                    )
+                except (AttributeError, TypeError):
+                    pass
 
-                def _on_progress(pct, dlg=progress_dialog):
-                    try:
-                        # Switch from indeterminate to 0-100 when we receive a progress update.
-                        if dlg.maximum() == 0:
-                            dlg.setRange(0, 100)
-                        dlg.setValue(int(pct))
-                    except Exception:
-                        pass
-
-                worker.signals.status.connect(_on_status)
-                worker.signals.progress.connect(_on_progress)
-            except Exception:
+                # progress: switch to determinate range on first update,
+                # then forward the value. Bind through a small helper that
+                # lives on the GUI thread. Parent it to the dialog so it
+                # is destroyed automatically when the dialog goes away.
+                helper = _ProgressBridge(progress_dialog, parent=progress_dialog)
+                try:
+                    worker.signals.progress.connect(
+                        helper.on_progress, QtCore.Qt.QueuedConnection
+                    )
+                except (AttributeError, TypeError):
+                    pass
+            except Exception as e:
+                self.log_debug(f"Progress dialog setup failed (non-fatal): {e}")
                 progress_dialog = None
 
-        def _cleanup():
+        # Cleanup must run on the GUI thread so it can touch QWidgets.
+        try:
+            worker.signals.finished.connect(
+                lambda w=worker: self._on_worker_finished(w),
+                QtCore.Qt.QueuedConnection if QtCore else 0,
+            )
+        except (AttributeError, TypeError):
             try:
-                self._active_workers.discard(worker)
+                worker.signals.finished.connect(lambda w=worker: self._on_worker_finished(w))
+            except Exception:
+                pass
+
+        if on_result:
+            try:
+                worker.signals.result.connect(
+                    on_result,
+                    QtCore.Qt.QueuedConnection if QtCore else 0,
+                )
+            except (AttributeError, TypeError):
+                try:
+                    worker.signals.result.connect(on_result)
+                except Exception:
+                    pass
+
+        try:
+            worker.signals.error.connect(
+                self._on_worker_error,
+                QtCore.Qt.QueuedConnection if QtCore else 0,
+            )
+        except (AttributeError, TypeError):
+            worker.signals.error.connect(self._on_worker_error)
+
+        self.threadpool.start(worker)
+
+    def _on_worker_finished(self, worker):
+        """Runs on the GUI thread (queued connection). Safe to touch Qt."""
+        with self._workers_lock:
+            self._active_workers.discard(worker)
+            dlg = self._active_progress_dialogs.pop(worker, None)
+        if dlg is not None:
+            try:
+                dlg.close()
             except Exception:
                 pass
             try:
-                dlg = self._active_progress_dialogs.pop(worker, None)
-                if dlg:
-                    dlg.close()
+                dlg.deleteLater()
+            except Exception:
+                pass
+        # Drop the WorkerSignals QObject promptly to avoid lingering connections.
+        try:
+            worker.signals.deleteLater()
+        except Exception:
+            pass
+
+    def shutdown(self, wait_ms=5000):
+        """
+        Cleanly tear the plugin down: stop accepting new work, close
+        progress dialogs, disconnect every still-running worker's
+        signals so they cannot fire callbacks at this (about-to-be
+        deleted) instance, and wait briefly for in-flight workers.
+
+        Returns True if the threadpool drained inside ``wait_ms``; the
+        caller should only release ``self`` (e.g. ``deleteLater``) when
+        this returns True.
+        """
+        self._shutting_down = True
+
+        with self._workers_lock:
+            dialogs = list(self._active_progress_dialogs.values())
+            workers = list(self._active_workers)
+            self._active_progress_dialogs.clear()
+
+        for dlg in dialogs:
+            try:
+                dlg.close()
+            except Exception:
+                pass
+            try:
+                dlg.deleteLater()
+            except Exception:
+                pass
+
+        # Sever every connection on still-running workers so they cannot
+        # call back into us (or our dialogs) after we're gone. The Worker
+        # itself emits via signals.error / signals.result / signals.finished;
+        # disconnecting the WorkerSignals QObject removes every receiver.
+        for w in workers:
+            try:
+                w.signals.disconnect()
+            except (RuntimeError, TypeError):
+                # No connections / already disconnected.
+                pass
             except Exception:
                 pass
 
         try:
-            worker.signals.finished.connect(_cleanup)
+            self.threadpool.clear()  # remove queued runnables that haven't started
         except Exception:
             pass
 
-        if on_result:
-            try:
-                worker.signals.result.connect(on_result)
-            except Exception:
-                pass
+        drained = False
+        try:
+            drained = bool(self.threadpool.waitForDone(int(wait_ms)))
+        except Exception:
+            drained = False
 
-        worker.signals.error.connect(self._on_worker_error)
-        self.threadpool.start(worker)
+        with self._workers_lock:
+            self._active_workers.clear()
+
+        # Release HTTP connection pool.
+        try:
+            if hasattr(self, "remix_api") and hasattr(self.remix_api, "close"):
+                self.remix_api.close()
+        except Exception:
+            pass
+
+        return drained
 
     # --- Painter stack/channel helpers (API differences + missing-channel robustness) ---
     def _get_texture_set_stack(self, texture_set):
@@ -222,12 +359,17 @@ class RemixConnectorPlugin(QObject):
         return self.settings
 
     def _write_log_line(self, level, msg):
+        # Serialize file writes so concurrent workers cannot interleave bytes.
         try:
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            with open(self._log_file_path, "a", encoding="utf-8") as f:
-                f.write(f"[{ts}] [{level.upper()}] {msg}\n")
-        except Exception:
+            line = f"[{ts}] [{level.upper()}] {msg}\n"
+            with self._log_lock:
+                with open(self._log_file_path, "a", encoding="utf-8") as f:
+                    f.write(line)
+        except OSError:
             # Never let logging crash the plugin.
+            pass
+        except Exception:
             pass
 
     def log_info(self, msg):
@@ -262,7 +404,7 @@ class RemixConnectorPlugin(QObject):
         try:
             import substance_painter.ui
             substance_painter.ui.display_message(str(msg))
-        except:
+        except Exception:
             self.log_info(f"UI Message: {msg}")
 
     def load_settings(self):
@@ -723,7 +865,8 @@ class RemixConnectorPlugin(QObject):
         try:
             import substance_painter.ui
             parent = substance_painter.ui.get_main_window()
-        except: pass
+        except Exception:
+            pass
 
         def _test_connection(candidate_settings):
             try:
@@ -742,7 +885,7 @@ class RemixConnectorPlugin(QObject):
 
         try:
             ok = dialog.exec() if hasattr(dialog, "exec") else dialog.exec_()
-        except Exception:
+        except AttributeError:
             ok = dialog.exec_()
 
         if ok:
@@ -750,7 +893,7 @@ class RemixConnectorPlugin(QObject):
             self.save_settings()
             self.display_message("Settings saved.")
 
-    def _build_diagnostics_text(self):
+    def _build_diagnostics_text(self, ping_result=None, progress_callback=None, status_callback=None):
         lines = []
         lines.append(f"{PLUGIN_NAME} v{PLUGIN_VERSION}")
         lines.append("")
@@ -762,10 +905,13 @@ class RemixConnectorPlugin(QObject):
         lines.append("")
 
         # Connection check
-        try:
-            ok, msg = self.remix_api.ping(timeout=2.0)
-        except Exception as e:
-            ok, msg = False, str(e)
+        if ping_result is None:
+            try:
+                ok, msg = self.remix_api.ping(timeout=2.0)
+            except Exception as e:
+                ok, msg = False, str(e)
+        else:
+            ok, msg = ping_result
         lines.append(f"Remix API ping: {'OK' if ok else 'FAIL'} - {msg}")
         lines.append("")
 
@@ -802,13 +948,32 @@ class RemixConnectorPlugin(QObject):
         lines.append(f"Repo: {PLUGIN_REPO_URL}")
         return "\n".join(lines)
 
-    def handle_diagnostics(self):
+    def _diagnostics_ping(self, progress_callback=None, status_callback=None):
+        if status_callback:
+            status_callback.emit("Pinging Remix...")
         try:
-            dlg = DiagnosticsDialog(self._build_diagnostics_text(), self._get_ui_parent())
-            dlg.exec_()
+            return self.remix_api.ping(timeout=2.0)
         except Exception as e:
-            self.log_error(f"Diagnostics failed: {e}", exc_info=True)
-            self.display_message(f"Diagnostics failed: {e}")
+            return False, str(e)
+
+    def handle_diagnostics(self):
+        # Run the ping in a worker, then assemble the (Painter-API-touching) text on the GUI thread.
+        worker = Worker(self._diagnostics_ping)
+
+        def _show(ping_res):
+            try:
+                text = self._build_diagnostics_text(ping_result=ping_res)
+                dlg = DiagnosticsDialog(text, self._get_ui_parent())
+                try:
+                    dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+                except Exception:
+                    pass
+                dlg.exec_()
+            except Exception as e:
+                self.log_error(f"Diagnostics failed: {e}", exc_info=True)
+                self.display_message(f"Diagnostics failed: {e}")
+
+        self._start_worker(worker, on_result=_show, title="Diagnostics", show_progress=False)
 
     def handle_about(self):
         try:
@@ -826,20 +991,79 @@ class RemixConnectorPlugin(QObject):
 plugin_instance = None
 PLUGIN_SETTINGS = {}
 
+
 def setup_logging():
     global plugin_instance, PLUGIN_SETTINGS
+    # If a previous instance exists (reload scenario), tear it down first
+    # so its workers/dialogs don't leak. shutdown() severs signal
+    # connections so any still-running workers cannot fire callbacks
+    # into the old instance, even when waitForDone times out.
+    if plugin_instance is not None:
+        try:
+            drained = bool(plugin_instance.shutdown(wait_ms=2000))
+        except Exception:
+            drained = False
+        if drained:
+            try:
+                plugin_instance.deleteLater()
+            except Exception:
+                pass
     plugin_instance = RemixConnectorPlugin()
     PLUGIN_SETTINGS = plugin_instance.settings
 
-def handle_pull_from_remix(): plugin_instance.handle_pull_from_remix()
-def handle_import_textures(): plugin_instance.handle_import_textures()
-def handle_push_to_remix(): plugin_instance.handle_push_to_remix()
-def handle_relink_and_push_to_remix(): plugin_instance.handle_relink_and_push_to_remix()
-def handle_settings(): plugin_instance.handle_settings()
-def handle_diagnostics(): plugin_instance.handle_diagnostics()
-def handle_about(): plugin_instance.handle_about()
-def load_plugin_settings(): pass # handled by class
-def save_plugin_settings(): plugin_instance.save_settings()
+
+def teardown():
+    """
+    Called by the host on plugin shutdown.
+
+    If the threadpool drained within the wait window, schedule the
+    QObject for deletion. If it did not (e.g. a 600s ingest or 900s
+    Blender unwrap is still running), keep the QObject alive so that
+    the running worker's `run()` can complete in peace; we have already
+    severed its signal connections in ``shutdown()`` so it cannot
+    fire callbacks back into us. The instance will be collected when
+    Python drops the last reference.
+    """
+    global plugin_instance
+    if plugin_instance is None:
+        return
+
+    drained = False
+    try:
+        drained = bool(plugin_instance.shutdown(wait_ms=5000))
+    except Exception:
+        drained = False
+
+    if drained:
+        try:
+            plugin_instance.deleteLater()
+        except Exception:
+            pass
+
+    plugin_instance = None
+
+
+def _safe_call(handler_name):
+    inst = plugin_instance
+    if inst is None:
+        print(f"[RemixConnector] Plugin not initialized; ignoring '{handler_name}'.")
+        return
+    handler = getattr(inst, handler_name, None)
+    if not callable(handler):
+        print(f"[RemixConnector] Missing handler '{handler_name}'.")
+        return
+    handler()
+
+
+def handle_pull_from_remix(): _safe_call('handle_pull_from_remix')
+def handle_import_textures(): _safe_call('handle_import_textures')
+def handle_push_to_remix(): _safe_call('handle_push_to_remix')
+def handle_relink_and_push_to_remix(): _safe_call('handle_relink_and_push_to_remix')
+def handle_settings(): _safe_call('handle_settings')
+def handle_diagnostics(): _safe_call('handle_diagnostics')
+def handle_about(): _safe_call('handle_about')
+def load_plugin_settings(): pass  # handled by class
+def save_plugin_settings(): _safe_call('save_settings')
 
 if __name__ == "__main__":
     setup_logging()
