@@ -83,6 +83,14 @@ class TestConvertDdsToPng(unittest.TestCase):
             self.tp.convert_dds_to_png(fake_texconv, "/nonexistent/foo.dds", "foo")
         self.assertIn("not found", str(ctx.exception))
 
+    def test_raises_if_executable_name_invalid(self):
+        fake_texconv = os.path.join(self.tmpdir, "malicious.exe")
+        open(fake_texconv, "w").close()
+        with self.assertRaises(RuntimeError) as ctx:
+            self.tp.convert_dds_to_png(fake_texconv, "/nonexistent/foo.dds", "foo")
+        self.assertIn("Security error", str(ctx.exception))
+        self.assertIn("Invalid executable name", str(ctx.exception))
+
     @patch("subprocess.run")
     def test_raises_on_nonzero_returncode(self, mock_run):
         fake_texconv = os.path.join(self.tmpdir, "texconv.exe")

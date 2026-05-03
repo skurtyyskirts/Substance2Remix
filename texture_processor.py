@@ -70,6 +70,11 @@ class TextureProcessor:
     def convert_dds_to_png(self, texconv_exe, dds_file, output_png_target_name_base, output_dir_override=None):
         if not texconv_exe or not os.path.isfile(texconv_exe): 
             raise RuntimeError(f"texconv.exe path is not configured or invalid: {texconv_exe}")
+
+        exe_name = os.path.basename(texconv_exe).lower()
+        if exe_name not in ("texconv", "texconv.exe"):
+            raise RuntimeError(f"Security error: Invalid executable name '{exe_name}'. Expected 'texconv' or 'texconv.exe'.")
+
         if not os.path.isfile(dds_file): 
             raise RuntimeError(f"Input DDS file not found: {dds_file}")
 
@@ -146,6 +151,14 @@ class TextureProcessor:
             self._log_error(f"Blender executable invalid: '{blender_exe}'")
             self._display_message("Error: Blender executable path invalid.")
             return None
+
+        exe_name = os.path.basename(blender_exe).lower()
+        if exe_name not in ("blender", "blender.exe"):
+            err_msg = f"Security error: Invalid executable name '{exe_name}'. Expected 'blender' or 'blender.exe'."
+            self._log_error(err_msg)
+            self._display_message(f"Error: {err_msg}")
+            return None
+
         if not unwrap_script_path:
             self._display_message("Error: Blender unwrap script not found.")
             return None

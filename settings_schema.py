@@ -154,6 +154,13 @@ def atomic_write_json(path: str, data: Dict[str, Any]) -> Tuple[bool, str]:
         tmp_path = f"{path}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
+
+        # Set file permissions to 0o600 for security
+        try:
+            os.chmod(tmp_path, 0o600)
+        except Exception:
+            pass
+
         os.replace(tmp_path, path)
         return True, ""
     except Exception as e:
