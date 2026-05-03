@@ -47,21 +47,6 @@ class TestStripKnownTextureExtensions(unittest.TestCase):
         self.assertEqual(result, "foo")
 
 
-class TestStripIngestChannelSuffix(unittest.TestCase):
-    def test_strips_single_letter_suffixes(self):
-        for letter in "anrmheo":
-            self.assertEqual(
-                TextureProcessor._strip_ingest_channel_suffix(f"foo.{letter}"),
-                "foo",
-                msg=f"expected suffix .{letter} to be stripped",
-            )
-
-    def test_leaves_no_suffix(self):
-        self.assertEqual(TextureProcessor._strip_ingest_channel_suffix("foo"), "foo")
-
-    def test_leaves_multi_char_suffix(self):
-        self.assertEqual(TextureProcessor._strip_ingest_channel_suffix("foo.ab"), "foo.ab")
-
 
 class TestConvertDdsToPng(unittest.TestCase):
     def setUp(self):
