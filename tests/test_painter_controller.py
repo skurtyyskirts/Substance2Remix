@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# We need to mock substance_painter before importing painter_controller
+# painter_controller handles missing substance_painter on import; tests
+# replace painter_controller.substance_painter in setUp.
 import painter_controller
 from painter_controller import PainterController
 
