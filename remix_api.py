@@ -215,25 +215,18 @@ class RemixAPIClient:
         return None, result['error'] or "Failed to get default directory from Remix API."
 
     def derive_project_name_from_dir(self, remix_dir_path):
-        if not remix_dir_path: return "UnknownProject"
+        """
+        Asks Stagecraft to guess the project name for a given directory.
+        """
+        if not remix_dir_path:
+            return None
+        res = self.make_request("GET", "/stagecraft/project/name", params={"dir": remix_dir_path})
+        if not res.get("success"):
+            return None
         try:
-            path_norm = os.path.abspath(os.path.normpath(remix_dir_path))
-            parts = []
-            cursor = path_norm
-            for _ in range(6):
-                base = os.path.basename(cursor)
-                if base: parts.append(base)
-                parent = os.path.dirname(cursor)
-                if parent == cursor: break
-                cursor = parent
-            
-            known_tail_names = {"textures", "painterconnector_ingested", "ingested", "captures", "assets", "output", "export"}
-            for name in parts:
-                if name.lower() not in known_tail_names and name:
-                    return name
+            return res.get("data", {}).get("name")
         except Exception:
-            pass
-        return "UnknownProject"
+            return None
 
     def get_material_from_mesh(self, mesh_prim_path):
         if not mesh_prim_path: return None, "Mesh prim path cannot be empty."
