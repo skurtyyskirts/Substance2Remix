@@ -351,17 +351,28 @@ class RemixAPIClient:
         return None, res.get("error", "Failed to get textures.")
 
     def ingest_texture(self, pbr_type, texture_file_path, project_output_dir_abs):
+        """
+        Asks Stagecraft to ingest a texture file.
+        Returns (success_bool, result_path_or_error_msg).
+        """
+        if not texture_file_path or not pbr_type:
+            return False, "Invalid arguments to ingest_texture"
+
+        # First get default output dir if we don't have one
+        if not project_output_dir_abs:
+            project_output_dir_abs = self.get_project_default_output_dir()
+
         self._log_info(f"Ingesting {pbr_type}: {self.safe_basename(texture_file_path)}")
         
         if not os.path.isfile(texture_file_path):
-             return None, f"File not found: {texture_file_path}"
+             return False, f"File not found: {texture_file_path}"
         
         settings = self.settings_getter()
         output_subfolder = settings.get("remix_output_subfolder", "Textures/PainterConnector_Ingested").strip('/\\')
         target_ingest_dir_abs = os.path.normpath(os.path.join(project_output_dir_abs, output_subfolder))
         
         try: os.makedirs(target_ingest_dir_abs, exist_ok=True)
-        except Exception as e: return None, f"Failed to create directory: {e}"
+        except Exception as e: return False, f"Failed to create directory: {e}"
 
         abs_texture_path = os.path.abspath(texture_file_path).replace(os.sep, '/')
         target_ingest_dir_api = os.path.abspath(target_ingest_dir_abs).replace(os.sep, '/')
@@ -419,7 +430,7 @@ class RemixAPIClient:
             retries=1,
             timeout=INGEST_REQUEST_TIMEOUT_SECONDS,
         )
-        if not res["success"]: return None, res.get("error")
+        if not res["success"]: return False, res.get("error")
 
         # Parse response to find output path
         original_base = os.path.splitext(self.safe_basename(texture_file_path))[0]
@@ -499,12 +510,12 @@ class RemixAPIClient:
         if not ingested_path and fallback_match:
             ingested_path = fallback_match
 
-        if not ingested_path: return None, "Could not identify output path from API response."
+        if not ingested_path: return False, "Could not identify output path from API response."
 
         final_path = os.path.normpath(ingested_path) if os.path.isabs(ingested_path) else os.path.normpath(os.path.join(target_ingest_dir_api.replace('/', os.sep), ingested_path))
-        if not os.path.isfile(final_path): return None, f"File missing: {final_path}"
+        if not os.path.isfile(final_path): return False, f"File missing: {final_path}"
         
-        return final_path, None
+        return True, final_path
 
     def get_current_edit_target(self):
         self._log_info("Getting current edit target layer from Remix...")

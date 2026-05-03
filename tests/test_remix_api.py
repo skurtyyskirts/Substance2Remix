@@ -8,11 +8,11 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+_ReqException = type("RequestException", (OSError,), {}); _ConnErr = type("ConnectionError", (_ReqException,), {})
+_Timeout = type("Timeout", (_ReqException,), {})
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
+_req_mock.exceptions.RequestException = _ReqException
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -159,3 +159,142 @@ class TestPing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestIngestTexture(unittest.TestCase):
+    def setUp(self):
+        self.client = _make_client()
+
+    def test_invalid_arguments(self):
+        success, err = self.client.ingest_texture(None, "/fake/file.png", "/out")
+        self.assertFalse(success)
+        self.assertIn("Invalid arguments", err)
+
+        success, err = self.client.ingest_texture("albedo", None, "/out")
+        self.assertFalse(success)
+        self.assertIn("Invalid arguments", err)
+
+    @patch("os.path.isfile")
+    def test_fallback_output_dir(self, mock_isfile):
+        mock_isfile.return_value = False
+        with patch.object(self.client, "get_project_default_output_dir", return_value="/default/out"):
+            success, err = self.client.ingest_texture("albedo", "/fake/file.png", None)
+            self.assertFalse(success)
+            self.assertIn("File not found", err)
+
+    @patch("os.path.isfile")
+    def test_file_not_found(self, mock_isfile):
+        mock_isfile.return_value = False
+        success, err = self.client.ingest_texture("albedo", "/fake/file.png", "/out")
+        self.assertFalse(success)
+        self.assertIn("File not found", err)
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_mkdir_fails(self, mock_makedirs, mock_isfile):
+        mock_isfile.return_value = True
+        mock_makedirs.side_effect = Exception("access denied")
+        success, err = self.client.ingest_texture("albedo", "/fake/file.png", "/out")
+        self.assertFalse(success)
+        self.assertIn("Failed to create directory", err)
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_api_failure(self, mock_makedirs, mock_isfile):
+        mock_isfile.return_value = True
+        mock_makedirs.return_value = None
+
+        with patch.object(self.client, "make_request", return_value={"success": False, "error": "api down"}):
+            success, err = self.client.ingest_texture("albedo", "/fake/file.png", "/out")
+            self.assertFalse(success)
+            self.assertEqual(err, "api down")
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_success_completed_schemas(self, mock_makedirs, mock_isfile):
+        # We need os.path.isfile to be True for the initial check, and True for the final check.
+        # final check calls os.path.isfile(final_path)
+        mock_isfile.return_value = True
+        mock_makedirs.return_value = None
+
+        api_resp = {
+            "success": True,
+            "data": {
+                "completed_schemas": [
+                    {
+                        "check_plugins": [
+                            {
+                                "data": {
+                                    "data_flows": [
+                                        {"channel": "ingestion_output", "output_data": ["file.a.rtex.dds"]}
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        with patch.object(self.client, "make_request", return_value=api_resp):
+            # pbr_type "albedo" expects suffix "a"
+            success, path = self.client.ingest_texture("albedo", "/fake/file.png", "/out")
+            self.assertTrue(success)
+            self.assertTrue(path.endswith("file.a.rtex.dds"))
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_success_content_fallback(self, mock_makedirs, mock_isfile):
+        mock_isfile.return_value = True
+        mock_makedirs.return_value = None
+
+        api_resp = {
+            "success": True,
+            "data": {
+                "content": ["file.n.rtex.dds"]
+            }
+        }
+        with patch.object(self.client, "make_request", return_value=api_resp):
+            # normal map -> expects suffix "n"
+            success, path = self.client.ingest_texture("normal", "/fake/file.png", "/out")
+            self.assertTrue(success)
+            self.assertTrue(path.endswith("file.n.rtex.dds"))
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_output_path_not_identified(self, mock_makedirs, mock_isfile):
+        mock_isfile.return_value = True
+        mock_makedirs.return_value = None
+
+        # Missing paths entirely
+        api_resp = {
+            "success": True,
+            "data": {}
+        }
+        with patch.object(self.client, "make_request", return_value=api_resp):
+            success, err = self.client.ingest_texture("albedo", "/fake/file.png", "/out")
+            self.assertFalse(success)
+            self.assertIn("Could not identify output path", err)
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_file_missing_after_ingest(self, mock_makedirs, mock_isfile):
+        # Return True for the initial check, False for the final check.
+        # We can use side_effect with a list or a small function.
+        def isfile_side_effect(p):
+            # the initial file check
+            if p == "/fake/file.png": return True
+            # the final file check
+            return False
+
+        mock_isfile.side_effect = isfile_side_effect
+        mock_makedirs.return_value = None
+
+        api_resp = {
+            "success": True,
+            "data": {
+                "content": ["file.a.rtex.dds"]
+            }
+        }
+        with patch.object(self.client, "make_request", return_value=api_resp):
+            success, err = self.client.ingest_texture("albedo", "/fake/file.png", "/out")
+            self.assertFalse(success)
+            self.assertIn("File missing", err)
