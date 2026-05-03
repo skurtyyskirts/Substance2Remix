@@ -12,7 +12,7 @@ import threading
 from . import dependency_manager
 from .qt_utils import QObject, Signal, Slot, QThread, QRunnable, QThreadPool, QtWidgets, QtCore, QT_BINDING
 from .plugin_info import PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_REPO_URL, PLUGIN_DESCRIPTION
-from .remix_api import RemixAPIClient, REMIX_ATTR_SUFFIX_TO_PBR_MAP, PBR_TO_REMIX_INGEST_VALIDATION_TYPE_MAP
+from .remix_api import RemixAPIClient, REMIX_ATTR_SUFFIX_TO_PBR_MAP
 from .texture_processor import TextureProcessor
 from .painter_controller import PainterController
 from .async_utils import Worker
