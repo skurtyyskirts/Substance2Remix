@@ -153,5 +153,69 @@ class TestChooseNonOverwritingRoot(unittest.TestCase):
         self.assertEqual(result, "foo")
 
 
+class TestForcePushRootConflicts(unittest.TestCase):
+    def setUp(self):
+        self.tp = _make_processor()
+
+    @patch("os.path.isdir")
+    def test_invalid_inputs(self, mock_isdir):
+        mock_isdir.return_value = False
+        self.assertFalse(self.tp._force_push_root_conflicts("", "/some/dir"))
+        self.assertFalse(self.tp._force_push_root_conflicts("root", ""))
+        self.assertFalse(self.tp._force_push_root_conflicts(None, "/some/dir"))
+        self.assertFalse(self.tp._force_push_root_conflicts("root", None))
+
+        # Test valid inputs but isdir returns False
+        self.assertFalse(self.tp._force_push_root_conflicts("root", "/some/dir"))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_exact_matches(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+
+        mock_listdir.return_value = ["mymat.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/dir"))
+
+        mock_listdir.return_value = ["MYMAT.rtex.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/dir"))
+
+        mock_listdir.return_value = ["MyMat.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/dir"))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_matches_with_separators(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+
+        mock_listdir.return_value = ["mymat_albedo.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/dir"))
+
+        mock_listdir.return_value = ["mymat-normal.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/dir"))
+
+        mock_listdir.return_value = ["mymat.1.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/dir"))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_ignores_non_dds_files(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["mymat.png", "mymat.jpg", "mymat_albedo.tga"]
+        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/dir"))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_ignores_prefix_without_separator(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["mymaterial.dds", "mymatter.rtex.dds"]
+        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/dir"))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_handles_os_exceptions(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.side_effect = PermissionError("Access denied")
+        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/dir"))
+
 if __name__ == "__main__":
     unittest.main()
