@@ -155,3 +155,62 @@ class TestChooseNonOverwritingRoot(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestForcePushRootConflicts(unittest.TestCase):
+    def setUp(self):
+        self.tp = _make_processor()
+
+    @patch('os.path.isdir')
+    @patch('os.listdir')
+    def test_invalid_inputs(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        # root is None
+        self.assertFalse(self.tp._force_push_root_conflicts(None, "/fake/dir"))
+        # ingest_dir_abs is None
+        self.assertFalse(self.tp._force_push_root_conflicts("root", None))
+        # ingest_dir_abs is not a dir
+        mock_isdir.return_value = False
+        self.assertFalse(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+    @patch('os.path.isdir')
+    @patch('os.listdir')
+    def test_non_conflicting_filenames(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = [
+            "root_but_wrong_ext.png",
+            "different_root.dds",
+            "root123.dds",      # trailing chars neither "", ".", "_", "-"
+            "rooting.rtex.dds"  # string starts with root but char after is 'i'
+        ]
+        self.assertFalse(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+    @patch('os.path.isdir')
+    @patch('os.listdir')
+    def test_conflicting_exact_match(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["root.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+        mock_listdir.return_value = ["ROOT.RTEX.DDS"] # case insensitivity
+        self.assertTrue(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+    @patch('os.path.isdir')
+    @patch('os.listdir')
+    def test_conflicting_suffixes(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        conflicting_names = [
+            "root.BaseColor.dds",
+            "root_normal.dds",
+            "root-metallic.rtex.dds",
+        ]
+        for name in conflicting_names:
+            mock_listdir.return_value = [name]
+            self.assertTrue(self.tp._force_push_root_conflicts("root", "/fake/dir"), f"Failed for {name}")
+
+    @patch('os.path.isdir')
+    @patch('os.listdir')
+    def test_exception_handling(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.side_effect = PermissionError("Access Denied")
+        # Should gracefully return False instead of crashing
+        self.assertFalse(self.tp._force_push_root_conflicts("root", "/fake/dir"))
