@@ -120,12 +120,4 @@ class PainterController:
         if hasattr(substance_painter.project, 'close'):
             substance_painter.project.close()
 
-    def create_project(self, mesh_file_path, template_path=None, project_settings=None):
-        if hasattr(substance_painter.project, 'create'):
-             # This signature depends on API version, keeping it simple or passing args
-             # The original code likely calls it directly. 
-             # For now, I'll let the main logic call substance_painter directly for complex ops 
-             # unless I wrap them fully.
-             pass
-        pass
 
