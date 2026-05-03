@@ -8,11 +8,12 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+_ReqExc = type("RequestException", (OSError,), {})
+_ConnErr = type("ConnectionError", (_ReqExc,), {})
+_Timeout = type("Timeout", (_ReqExc,), {})
+_req_mock.exceptions.RequestException = _ReqExc
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -156,6 +157,28 @@ class TestPing(unittest.TestCase):
             ok, msg = client.ping()
         self.assertFalse(ok)
 
+
+
+class TestDeriveProjectName(unittest.TestCase):
+    def test_derive_project_name_error_path(self):
+        client = _make_client()
+        with patch.object(client, "make_request", return_value={"success": False}):
+            name = client.derive_project_name_from_dir("/some/dir")
+        self.assertIsNone(name)
+
+    def test_derive_project_name_success(self):
+        client = _make_client()
+        with patch.object(client, "make_request", return_value={"success": True, "data": {"name": "TestProject"}}):
+            name = client.derive_project_name_from_dir("/some/dir")
+        self.assertEqual(name, "TestProject")
+
+    def test_derive_project_name_empty_dir(self):
+        client = _make_client()
+        name = client.derive_project_name_from_dir(None)
+        self.assertIsNone(name)
+
+        name = client.derive_project_name_from_dir("")
+        self.assertIsNone(name)
 
 if __name__ == "__main__":
     unittest.main()
