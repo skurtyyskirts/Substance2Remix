@@ -153,5 +153,72 @@ class TestChooseNonOverwritingRoot(unittest.TestCase):
         self.assertEqual(result, "foo")
 
 
+
+
+class TestForcePushRootConflicts(unittest.TestCase):
+    def setUp(self):
+        self.tp = _make_processor()
+
+    @patch("os.path.isdir", return_value=True)
+    @patch("os.listdir")
+    def test_returns_false_for_invalid_inputs(self, mock_listdir, mock_isdir):
+        self.assertFalse(self.tp._force_push_root_conflicts("", "/fake/dir"))
+        self.assertFalse(self.tp._force_push_root_conflicts("root", ""))
+        self.assertFalse(self.tp._force_push_root_conflicts(None, "/fake/dir"))
+        self.assertFalse(self.tp._force_push_root_conflicts("root", None))
+
+        mock_isdir.return_value = False
+        self.assertFalse(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+    @patch("os.path.isdir", return_value=True)
+    @patch("os.listdir")
+    def test_returns_false_if_listdir_fails(self, mock_listdir, mock_isdir):
+        mock_listdir.side_effect = PermissionError("Access denied")
+        self.assertFalse(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+    @patch("os.path.isdir", return_value=True)
+    @patch("os.listdir")
+    def test_returns_false_for_unrelated_files(self, mock_listdir, mock_isdir):
+        mock_listdir.return_value = ["other.dds", "root.png", "root_model.obj", "completely_different.rtex.dds"]
+        self.assertFalse(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+    @patch("os.path.isdir", return_value=True)
+    @patch("os.listdir")
+    def test_returns_false_for_prefix_but_no_separator(self, mock_listdir, mock_isdir):
+        # Starts with 'root' but the next char is not separator
+        mock_listdir.return_value = ["rootabc.dds", "root123.rtex.dds"]
+        self.assertFalse(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+    @patch("os.path.isdir", return_value=True)
+    @patch("os.listdir")
+    def test_returns_true_for_exact_match(self, mock_listdir, mock_isdir):
+        mock_listdir.return_value = ["root.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+        mock_listdir.return_value = ["root.rtex.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+    @patch("os.path.isdir", return_value=True)
+    @patch("os.listdir")
+    def test_returns_true_for_separator_matches(self, mock_listdir, mock_isdir):
+        mock_listdir.return_value = ["root_1.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+        mock_listdir.return_value = ["root-albedo.rtex.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+        mock_listdir.return_value = ["root.normal.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+    @patch("os.path.isdir", return_value=True)
+    @patch("os.listdir")
+    def test_case_insensitive_matching(self, mock_listdir, mock_isdir):
+        mock_listdir.return_value = ["rOoT.DdS"]
+        self.assertTrue(self.tp._force_push_root_conflicts("ROOT", "/fake/dir"))
+
+        mock_listdir.return_value = ["ROOT_Albedo.rTeX.DdS"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
 if __name__ == "__main__":
+
     unittest.main()
