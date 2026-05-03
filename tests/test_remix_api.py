@@ -8,11 +8,12 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+_RequestException = type("RequestException", (OSError,), {})
+_ConnErr = type("ConnectionError", (_RequestException,), {})
+_Timeout = type("Timeout", (_RequestException,), {})
+_req_mock.exceptions.RequestException = _RequestException
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -156,6 +157,50 @@ class TestPing(unittest.TestCase):
             ok, msg = client.ping()
         self.assertFalse(ok)
 
+
+
+class TestGetCurrentEditTarget(unittest.TestCase):
+    def test_get_current_edit_target_success_layer(self):
+        client = _make_client()
+        with patch.object(client, "make_request") as mock_make_request:
+            mock_make_request.return_value = {"success": True, "data": {"layer_id": "C:\\path\\to\\layer"}}
+
+            result, err = client.get_current_edit_target()
+
+            self.assertEqual(result, os.path.normpath("C:/path/to/layer"))
+            self.assertIsNone(err)
+            mock_make_request.assert_called_once_with('GET', "/stagecraft/layers/target")
+
+    def test_get_current_edit_target_success_project_fallback(self):
+        client = _make_client()
+        with patch.object(client, "make_request") as mock_make_request:
+            def make_request_side_effect(method, endpoint, **kwargs):
+                if endpoint == "/stagecraft/layers/target":
+                    return {"success": False, "data": None}
+                elif endpoint == "/stagecraft/project/":
+                    return {"success": True, "data": {"layer_id": "C:\\fallback\\path"}}
+                return {"success": False}
+
+            mock_make_request.side_effect = make_request_side_effect
+
+            result, err = client.get_current_edit_target()
+
+            self.assertEqual(result, os.path.normpath("C:/fallback/path"))
+            self.assertIsNone(err)
+            self.assertEqual(mock_make_request.call_count, 2)
+            mock_make_request.assert_any_call('GET', "/stagecraft/layers/target")
+            mock_make_request.assert_any_call('GET', "/stagecraft/project/")
+
+    def test_get_current_edit_target_failure(self):
+        client = _make_client()
+        with patch.object(client, "make_request") as mock_make_request:
+            mock_make_request.return_value = {"success": False, "data": None}
+
+            result, err = client.get_current_edit_target()
+
+            self.assertIsNone(result)
+            self.assertEqual(err, "Could not determine edit layer.")
+            self.assertEqual(mock_make_request.call_count, 2)
 
 if __name__ == "__main__":
     unittest.main()
