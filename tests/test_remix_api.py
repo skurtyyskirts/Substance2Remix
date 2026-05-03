@@ -8,22 +8,20 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
-_req_mock.exceptions.ConnectionError = _ConnErr
-_req_mock.exceptions.Timeout = _Timeout
 _req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
+_req_mock.exceptions.ConnectionError = type("ConnectionError", (_req_mock.exceptions.RequestException,), {})
+_req_mock.exceptions.Timeout = type("Timeout", (_req_mock.exceptions.RequestException,), {})
+_ConnErr = _req_mock.exceptions.ConnectionError
+_Timeout = _req_mock.exceptions.Timeout
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from remix_api import RemixAPIClient  # noqa: E402
 
-
 def _make_client(base_url="http://localhost:8011"):
     settings = {"api_base_url": base_url}
     return RemixAPIClient(settings_getter=lambda: settings, logger=MagicMock())
-
 
 def _mock_response(status=200, body=None):
     r = MagicMock()
@@ -33,11 +31,9 @@ def _mock_response(status=200, body=None):
     r.json.return_value = body or {}
     return r
 
-
 def _mock_session():
     """Return a mock session that make_request can call .request() on."""
     return MagicMock()
-
 
 class TestTLSPolicy(unittest.TestCase):
     """make_request must apply verify=False for loopback and verify=True for remote."""
@@ -71,7 +67,6 @@ class TestTLSPolicy(unittest.TestCase):
             client.make_request("GET", "/test", retries=1, verify_ssl=True)
         _, kwargs = sess.request.call_args
         self.assertTrue(kwargs.get("verify"))
-
 
 class TestRetryLogic(unittest.TestCase):
     def test_retries_on_connection_error(self):
@@ -133,7 +128,6 @@ class TestRetryLogic(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["status_code"], 200)
 
-
 class TestPing(unittest.TestCase):
     def test_ping_success(self):
         client = _make_client()
@@ -156,6 +150,100 @@ class TestPing(unittest.TestCase):
             ok, msg = client.ping()
         self.assertFalse(ok)
 
+
+
+class TestUpdateTexturesBatch(unittest.TestCase):
+    def test_update_textures_batch_empty(self):
+        client = _make_client()
+        ok, msg = client.update_textures_batch([])
+        self.assertTrue(ok)
+        self.assertEqual(msg, "No textures.")
+
+    def test_update_textures_batch_success(self):
+        client = _make_client()
+        sess = _mock_session()
+        sess.request.return_value = _mock_response(200, {"success": True})
+
+        textures = [
+            ("/Root/World/mesh.mat_diffuse", "/absolute/path/diffuse.dds"),
+            ("/Root/World/mesh.mat_normal", "/absolute/path/normal.dds"),
+        ]
+
+        with patch.object(client, "_get_session", return_value=sess):
+            ok, msg = client.update_textures_batch(textures)
+
+        self.assertTrue(ok)
+        self.assertIsNone(msg)
+
+        # Verify the payload
+
+
+        call_args = sess.request.call_args
+        args, kwargs = call_args
+        self.assertEqual(args[0], "PUT")
+        self.assertIn("/stagecraft/textures/", args[1])
+        self.assertEqual(kwargs["json"]["force"], True)
+        self.assertEqual(kwargs["json"]["textures"], [
+            ["/Root/World/mesh.mat_diffuse", "/absolute/path/diffuse.dds"],
+            ["/Root/World/mesh.mat_normal", "/absolute/path/normal.dds"]
+        ])
+
+    def test_update_textures_batch_relative_path(self):
+        client = _make_client()
+        sess = _mock_session()
+        sess.request.return_value = _mock_response(200, {"success": True})
+
+        textures = [
+            ("/Root/World/mesh.mat_diffuse", "relative/path/diffuse.dds"),
+            ("/Root/World/mesh.mat_normal", "/absolute/path/normal.dds"),
+        ]
+
+        with patch.object(client, "_get_session", return_value=sess):
+            ok, msg = client.update_textures_batch(textures)
+
+        self.assertTrue(ok)
+        self.assertIn("Success with warnings", msg)
+        self.assertIn("Path not absolute", msg)
+
+        # Verify the payload only includes the absolute path
+        call_args = sess.request.call_args
+        args, kwargs = call_args
+        self.assertEqual(kwargs["json"]["textures"], [
+            ["/Root/World/mesh.mat_normal", "/absolute/path/normal.dds"]
+        ])
+
+    def test_update_textures_batch_all_relative(self):
+        client = _make_client()
+        sess = _mock_session()
+
+        textures = [
+            ("/Root/World/mesh.mat_diffuse", "relative/path/diffuse.dds"),
+            ("/Root/World/mesh.mat_normal", "relative/path/normal.dds"),
+        ]
+
+        with patch.object(client, "_get_session", return_value=sess):
+            ok, msg = client.update_textures_batch(textures)
+
+        self.assertFalse(ok)
+        self.assertEqual(msg, "No valid paths.")
+        sess.request.assert_not_called()
+
+    def test_update_textures_batch_failure(self):
+        client = _make_client()
+        sess = _mock_session()
+        # API Error logic returns `success: False` with error message based on response data or text
+        sess.request.return_value = _mock_response(500, {"success": False, "error": "Server error"})
+
+        textures = [
+            ("/Root/World/mesh.mat_diffuse", "/absolute/path/diffuse.dds"),
+        ]
+
+        with patch.object(client, "_get_session", return_value=sess):
+            ok, msg = client.update_textures_batch(textures)
+
+        self.assertFalse(ok)
+        self.assertIn("API Error", msg)
+        self.assertIn("Server error", msg)
 
 if __name__ == "__main__":
     unittest.main()
