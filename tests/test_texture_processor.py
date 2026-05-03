@@ -76,6 +76,13 @@ class TestConvertDdsToPng(unittest.TestCase):
             self.tp.convert_dds_to_png("/nonexistent/texconv.exe", "/some/file.dds", "output")
         self.assertIn("texconv.exe", str(ctx.exception))
 
+    def test_raises_if_texconv_has_invalid_name(self):
+        fake_texconv = os.path.join(self.tmpdir, "malicious.exe")
+        open(fake_texconv, "w").close()
+        with self.assertRaises(RuntimeError) as ctx:
+            self.tp.convert_dds_to_png(fake_texconv, "/some/file.dds", "output")
+        self.assertIn("Security error: Invalid executable name", str(ctx.exception))
+
     def test_raises_if_dds_missing(self):
         fake_texconv = os.path.join(self.tmpdir, "texconv.exe")
         open(fake_texconv, "w").close()
@@ -130,6 +137,44 @@ class TestConvertDdsToPng(unittest.TestCase):
         result = self.tp.convert_dds_to_png(fake_texconv, fake_dds, "foo")
         self.assertEqual(result, expected_png)
 
+
+
+class TestUnwrapMeshWithBlender(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.tp = _make_processor({
+            "blender_executable_path": os.path.join(self.tmpdir, "blender.exe"),
+            "blender_unwrap_script_path": os.path.join(self.tmpdir, "unwrap.py")
+        })
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_returns_none_if_blender_has_invalid_name(self):
+        fake_blender = os.path.join(self.tmpdir, "malicious.exe")
+        open(fake_blender, "w").close()
+        self.tp.settings_getter = lambda: {
+            "blender_executable_path": fake_blender,
+            "blender_unwrap_script_path": os.path.join(self.tmpdir, "unwrap.py")
+        }
+
+        result = self.tp.unwrap_mesh_with_blender("/some/mesh.obj")
+        self.assertIsNone(result)
+
+    def test_returns_none_if_unwrap_script_has_invalid_extension(self):
+        fake_blender = os.path.join(self.tmpdir, "blender.exe")
+        open(fake_blender, "w").close()
+
+        fake_script = os.path.join(self.tmpdir, "unwrap.bat")
+        open(fake_script, "w").close()
+
+        self.tp.settings_getter = lambda: {
+            "blender_executable_path": fake_blender,
+            "blender_unwrap_script_path": fake_script
+        }
+
+        result = self.tp.unwrap_mesh_with_blender("/some/mesh.obj")
+        self.assertIsNone(result)
 
 class TestChooseNonOverwritingRoot(unittest.TestCase):
     def setUp(self):

@@ -70,6 +70,12 @@ class TextureProcessor:
     def convert_dds_to_png(self, texconv_exe, dds_file, output_png_target_name_base, output_dir_override=None):
         if not texconv_exe or not os.path.isfile(texconv_exe): 
             raise RuntimeError(f"texconv.exe path is not configured or invalid: {texconv_exe}")
+
+        # Security check: Ensure the executable is actually texconv
+        texconv_basename = self.safe_basename(texconv_exe).lower()
+        if texconv_basename not in ("texconv", "texconv.exe"):
+            raise RuntimeError(f"Security error: Invalid executable name '{texconv_basename}' for texconv.")
+
         if not os.path.isfile(dds_file): 
             raise RuntimeError(f"Input DDS file not found: {dds_file}")
 
@@ -146,9 +152,24 @@ class TextureProcessor:
             self._log_error(f"Blender executable invalid: '{blender_exe}'")
             self._display_message("Error: Blender executable path invalid.")
             return None
+
+        # Security check: Ensure the executable is actually blender
+        blender_basename = self.safe_basename(blender_exe).lower()
+        if blender_basename not in ("blender", "blender.exe"):
+            self._log_error(f"Security error: Invalid executable name '{blender_basename}' for Blender.")
+            self._display_message("Error: Invalid Blender executable name.")
+            return None
+
         if not unwrap_script_path:
             self._display_message("Error: Blender unwrap script not found.")
             return None
+
+        # Security check: Ensure the script has a .py extension
+        if not unwrap_script_path.lower().endswith(".py"):
+            self._log_error(f"Security error: Invalid script extension for '{unwrap_script_path}'. Must be .py")
+            self._display_message("Error: Invalid script extension.")
+            return None
+
 
         base, ext = os.path.splitext(input_mesh_path)
         output_suffix = settings.get("blender_unwrap_output_suffix", "_spUnwrapped")
