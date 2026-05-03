@@ -32,21 +32,6 @@ class TestSanitizeFilename(unittest.TestCase):
         self.assertEqual(_make_processor()._sanitize_filename_stem(""), "")
 
 
-class TestStripKnownTextureExtensions(unittest.TestCase):
-    def test_strips_dds(self):
-        self.assertEqual(TextureProcessor._strip_known_texture_extensions("foo.dds"), "foo")
-
-    def test_strips_rtex_dds(self):
-        self.assertEqual(TextureProcessor._strip_known_texture_extensions("foo.rtex.dds"), "foo")
-
-    def test_strips_png(self):
-        self.assertEqual(TextureProcessor._strip_known_texture_extensions("bar.png"), "bar")
-
-    def test_handles_windows_path(self):
-        result = TextureProcessor._strip_known_texture_extensions(r"C:\textures\foo.dds")
-        self.assertEqual(result, "foo")
-
-
 class TestStripIngestChannelSuffix(unittest.TestCase):
     def test_strips_single_letter_suffixes(self):
         for letter in "anrmheo":

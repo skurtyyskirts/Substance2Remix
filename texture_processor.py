@@ -54,15 +54,6 @@ class TextureProcessor:
         return cleaned[:120]
 
     @staticmethod
-    def _strip_known_texture_extensions(texture_path_or_name):
-        if not texture_path_or_name: return ""
-        base = TextureProcessor.safe_basename(str(texture_path_or_name).replace("\\", "/"))
-        stem = os.path.splitext(base)[0]
-        if stem.lower().endswith(".rtex"):
-            stem = os.path.splitext(stem)[0]
-        return stem
-
-    @staticmethod
     def _strip_ingest_channel_suffix(stem):
         if not stem: return ""
         return re.sub(r"\.[armhnoaodse]$", "", str(stem), flags=re.IGNORECASE)
