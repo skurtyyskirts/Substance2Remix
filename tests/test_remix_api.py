@@ -8,11 +8,14 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+_ReqExc = type("RequestException", (OSError,), {})
+_req_mock.exceptions.RequestException = _ReqExc
+_ConnErr = type("ConnectionError", (_ReqExc,), {})
+_Timeout = type("Timeout", (_ReqExc,), {})
+
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
+
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -26,6 +29,8 @@ def _make_client(base_url="http://localhost:8011"):
 
 
 def _mock_response(status=200, body=None):
+    if body and "success" not in body:
+        body["success"] = status < 400
     r = MagicMock()
     r.status_code = status
     r.content = b"{}"
@@ -155,6 +160,135 @@ class TestPing(unittest.TestCase):
         with patch.object(client, "_get_session", return_value=sess):
             ok, msg = client.ping()
         self.assertFalse(ok)
+
+
+
+
+class TestIngestTexture(unittest.TestCase):
+    def test_invalid_args(self):
+        client = _make_client()
+        ok, err = client.ingest_texture(None, "", "/out")
+        self.assertFalse(ok)
+        self.assertEqual(err, "Invalid arguments to ingest_texture")
+
+    @patch("os.path.isfile")
+    def test_file_not_found(self, mock_isfile):
+        mock_isfile.return_value = False
+        client = _make_client()
+        res, err = client.ingest_texture("albedo", "missing.png", "/out")
+        self.assertIsNone(res)
+        self.assertIn("File not found", err)
+
+    @patch("os.path.isfile")
+    def test_api_request_fails(self, mock_isfile):
+        mock_isfile.return_value = True
+        client = _make_client()
+        sess = _mock_session()
+        # Mock failed response
+        sess.request.return_value = _mock_response(500, {"success": False, "error": "Internal Server Error"})
+        with patch.object(client, "_get_session", return_value=sess):
+            with patch("os.makedirs"):
+                res, err = client.ingest_texture("albedo", "test.png", "/out")
+        self.assertIsNone(res)
+        self.assertIn("Internal Server Error", err)
+
+    @patch("os.path.isfile")
+    def test_success_expected_suffix(self, mock_isfile):
+        mock_isfile.return_value = True
+        client = _make_client()
+        sess = _mock_session()
+
+        # Mock successful response with expected suffix 'a' for albedo
+        api_response = {
+            "completed_schemas": [
+                    {
+                        "context_plugin": {
+                            "data": {
+                                "data_flows": [
+                                    {
+                                        "channel": "ingestion_output",
+                                        "output_data": ["test.a.rtex.dds", "test.n.rtex.dds"]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ]
+        }
+        sess.request.return_value = _mock_response(200, api_response)
+
+        with patch.object(client, "_get_session", return_value=sess):
+            with patch("os.makedirs"):
+                res, err = client.ingest_texture("albedo", "test.png", "/out")
+
+        self.assertIsNotNone(res)
+        self.assertIsNone(err)
+        self.assertTrue(res.endswith("test.a.rtex.dds"))
+
+    @patch("os.path.isfile")
+    def test_success_fallback_suffix(self, mock_isfile):
+        mock_isfile.return_value = True
+        client = _make_client()
+        sess = _mock_session()
+
+        # Mock successful response without expected 'a' suffix, but base name matches
+        api_response = {
+            "completed_schemas": [
+                    {
+                        "context_plugin": {
+                            "data": {
+                                "data_flows": [
+                                    {
+                                        "channel": "ingestion_output",
+                                        "output_data": ["test.x.rtex.dds"]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ]
+        }
+        sess.request.return_value = _mock_response(200, api_response)
+
+        with patch.object(client, "_get_session", return_value=sess):
+            with patch("os.makedirs"):
+                res, err = client.ingest_texture("albedo", "test.png", "/out")
+
+        self.assertIsNotNone(res)
+        self.assertIsNone(err)
+        self.assertTrue(res.endswith("test.x.rtex.dds"))
+
+    @patch("os.path.isfile")
+    def test_file_missing_after_success(self, mock_isfile):
+        # isfile returns True for the initial check, then False for final path check
+        mock_isfile.side_effect = [True, False]
+        client = _make_client()
+        sess = _mock_session()
+
+        api_response = {
+            "completed_schemas": [
+                    {
+                        "context_plugin": {
+                            "data": {
+                                "data_flows": [
+                                    {
+                                        "channel": "ingestion_output",
+                                        "output_data": ["test.a.rtex.dds"]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ]
+        }
+        sess.request.return_value = _mock_response(200, api_response)
+
+        with patch.object(client, "_get_session", return_value=sess):
+            with patch("os.makedirs"):
+                res, err = client.ingest_texture("albedo", "test.png", "/out")
+
+        self.assertIsNone(res)
+        self.assertIn("File missing", err)
 
 
 if __name__ == "__main__":

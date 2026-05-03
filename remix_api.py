@@ -351,6 +351,10 @@ class RemixAPIClient:
         return None, res.get("error", "Failed to get textures.")
 
     def ingest_texture(self, pbr_type, texture_file_path, project_output_dir_abs):
+
+        if not texture_file_path or not pbr_type:
+            return False, "Invalid arguments to ingest_texture"
+
         self._log_info(f"Ingesting {pbr_type}: {self.safe_basename(texture_file_path)}")
         
         if not os.path.isfile(texture_file_path):
