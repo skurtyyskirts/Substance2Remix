@@ -199,20 +199,16 @@ class RemixAPIClient:
         return {"success": False, "status_code": 0, "data": None, "error": last_error_message}
 
     def get_project_default_output_dir(self):
-        self._log_info("Getting Remix project default output directory...")
-        result = self.make_request('GET', "/stagecraft/assets/default-directory")
-
-        if result["success"] and isinstance(result.get("data"), dict):
-            default_dir_raw = result["data"].get("directory_path") or result["data"].get("asset_path")
-            if isinstance(default_dir_raw, str):
-                try:
-                    default_dir_abs = os.path.abspath(os.path.normpath(default_dir_raw))
-                    return default_dir_abs, None
-                except Exception as e:
-                    return None, f"Error processing path: {e}"
-            else:
-                return None, "API success but expected directory path missing."
-        return None, result['error'] or "Failed to get default directory from Remix API."
+        """
+        Returns the default output directory from the Remix API.
+        """
+        res = self.make_request("GET", "/stagecraft/project/default_output_dir")
+        if not res.get("success"):
+            return None
+        try:
+            return res.get("data", {}).get("default_output_dir")
+        except Exception:
+            return None
 
     def derive_project_name_from_dir(self, remix_dir_path):
         if not remix_dir_path: return "UnknownProject"

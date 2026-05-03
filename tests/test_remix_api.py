@@ -8,11 +8,13 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+_ReqExc = type("RequestException", (OSError,), {})
+_ConnErr = type("ConnectionError", (_ReqExc,), {})
+_Timeout = type("Timeout", (_ReqExc,), {})
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
+_req_mock.exceptions.RequestException = _ReqExc
+
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -156,6 +158,48 @@ class TestPing(unittest.TestCase):
             ok, msg = client.ping()
         self.assertFalse(ok)
 
+
+
+class TestGetProjectDefaultOutputDir(unittest.TestCase):
+    def setUp(self):
+        self.client = _make_client()
+
+    def test_success_with_default_output_dir(self):
+        with patch.object(self.client, "make_request") as mock_make_request:
+            mock_make_request.return_value = {
+                "success": True,
+                "data": {"default_output_dir": "C:\\RemixProject\\assets"}
+            }
+            path = self.client.get_project_default_output_dir()
+            self.assertEqual(path, "C:\\RemixProject\\assets")
+
+    def test_success_but_missing_data_key(self):
+        with patch.object(self.client, "make_request") as mock_make_request:
+            mock_make_request.return_value = {
+                "success": True,
+                "data": {}
+            }
+            path = self.client.get_project_default_output_dir()
+            self.assertIsNone(path)
+
+    def test_failure_from_make_request(self):
+        with patch.object(self.client, "make_request") as mock_make_request:
+            mock_make_request.return_value = {
+                "success": False,
+                "error": "Connection Timeout"
+            }
+            path = self.client.get_project_default_output_dir()
+            self.assertIsNone(path)
+
+    def test_exception_during_data_retrieval(self):
+        with patch.object(self.client, "make_request") as mock_make_request:
+            # Make data a string so that data.get() raises an AttributeError
+            mock_make_request.return_value = {
+                "success": True,
+                "data": "not a dictionary"
+            }
+            path = self.client.get_project_default_output_dir()
+            self.assertIsNone(path)
 
 if __name__ == "__main__":
     unittest.main()
