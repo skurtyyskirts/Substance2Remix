@@ -153,5 +153,36 @@ class TestChooseNonOverwritingRoot(unittest.TestCase):
         self.assertEqual(result, "foo")
 
 
+
+class TestSafeBasename(unittest.TestCase):
+    def test_none_returns_empty_string(self):
+        self.assertEqual(TextureProcessor.safe_basename(None), "")
+
+    def test_empty_string_returns_empty_string(self):
+        self.assertEqual(TextureProcessor.safe_basename(""), "")
+
+    def test_forward_slashes(self):
+        self.assertEqual(TextureProcessor.safe_basename("some/path/file.dds"), "file.dds")
+
+    def test_backslashes(self):
+        self.assertEqual(TextureProcessor.safe_basename("some\\path\\file.dds"), "file.dds")
+
+    def test_mixed_slashes(self):
+        self.assertEqual(TextureProcessor.safe_basename("some/mixed\\path/file.dds"), "file.dds")
+
+    def test_no_slashes(self):
+        self.assertEqual(TextureProcessor.safe_basename("file.dds"), "file.dds")
+
+    def test_non_string_object(self):
+        import pathlib
+        path = pathlib.Path("some/path/file.dds")
+        self.assertEqual(TextureProcessor.safe_basename(path), "file.dds")
+
+    @patch("ntpath.basename")
+    def test_exception_fallback(self, mock_basename):
+        mock_basename.side_effect = Exception("Test exception")
+        self.assertEqual(TextureProcessor.safe_basename("some/path/file.dds"), "some/path/file.dds")
+
+
 if __name__ == "__main__":
     unittest.main()
