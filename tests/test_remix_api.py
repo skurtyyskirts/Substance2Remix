@@ -8,11 +8,12 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+_ReqException = type("RequestException", (OSError,), {})
+_ConnErr = type("ConnectionError", (_ReqException,), {})
+_Timeout = type("Timeout", (_ReqException,), {})
+_req_mock.exceptions.RequestException = _ReqException
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -155,6 +156,36 @@ class TestPing(unittest.TestCase):
         with patch.object(client, "_get_session", return_value=sess):
             ok, msg = client.ping()
         self.assertFalse(ok)
+
+
+
+class TestUpdateTexturesBatch(unittest.TestCase):
+    def test_empty_textures(self):
+        client = _make_client()
+        ok, msg = client.update_textures_batch([])
+        self.assertTrue(ok)
+        self.assertEqual(msg, "No textures to update")
+
+    def test_success(self):
+        client = _make_client()
+        updates = [{"material_prim": "/mat", "texture_type": "albedo", "texture_path": "/path.dds"}]
+        with patch.object(client, "make_request", return_value={"success": True}) as mock_req:
+            ok, msg = client.update_textures_batch(updates)
+            self.assertTrue(ok)
+            self.assertIsNone(msg)
+            mock_req.assert_called_once()
+            args, kwargs = mock_req.call_args
+            self.assertEqual(args[0], "PATCH")
+            self.assertEqual(args[1], "/stagecraft/material/textures/bulk")
+            self.assertEqual(kwargs["json_payload"], {"updates": updates})
+
+    def test_request_failure(self):
+        client = _make_client()
+        updates = [{"material_prim": "/mat", "texture_type": "albedo", "texture_path": "/path.dds"}]
+        with patch.object(client, "make_request", return_value={"success": False, "error": "Server error"}) as mock_req:
+            ok, msg = client.update_textures_batch(updates)
+            self.assertFalse(ok)
+            self.assertEqual(msg, "Server error")
 
 
 if __name__ == "__main__":
