@@ -1,4 +1,3 @@
-import sys
 try:
     import substance_painter.textureset
     import substance_painter.resource
