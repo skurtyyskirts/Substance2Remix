@@ -8,11 +8,12 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+_RequestException = type("RequestException", (OSError,), {})
+_ConnErr = type("ConnectionError", (_RequestException,), {})
+_Timeout = type("Timeout", (_RequestException,), {})
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
+_req_mock.exceptions.RequestException = _RequestException
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -156,6 +157,51 @@ class TestPing(unittest.TestCase):
             ok, msg = client.ping()
         self.assertFalse(ok)
 
+
+class TestUpdateTexturesBatch(unittest.TestCase):
+    def setUp(self):
+        self.client = _make_client()
+
+    def test_empty_list(self):
+        success, msg = self.client.update_textures_batch([])
+        self.assertTrue(success)
+        self.assertEqual(msg, "No textures to update")
+
+    def test_successful_update(self):
+        self.client.make_request = MagicMock(return_value={"success": True})
+        textures = [
+            {"material_prim": "/World/Mat", "texture_type": "diffuse", "texture_path": "/path/diffuse.dds"},
+            {"material_prim": "/World/Mat", "texture_type": "normal", "texture_path": "/path/normal.dds"}
+        ]
+
+        success, msg = self.client.update_textures_batch(textures)
+
+        self.assertTrue(success)
+        self.assertIsNone(msg)
+
+        self.client.make_request.assert_called_once()
+        args, kwargs = self.client.make_request.call_args
+        self.assertEqual(args[0], "PATCH")
+        self.assertEqual(args[1], "/stagecraft/material/textures/bulk")
+
+        expected_payload = {
+            "updates": [
+                {"material_prim": "/World/Mat", "texture_type": "diffuse", "texture_path": "/path/diffuse.dds"},
+                {"material_prim": "/World/Mat", "texture_type": "normal", "texture_path": "/path/normal.dds"}
+            ]
+        }
+        self.assertEqual(kwargs["json_payload"], expected_payload)
+
+    def test_batch_update_failure(self):
+        self.client.make_request = MagicMock(return_value={"success": False, "error": "Internal Error"})
+        textures = [
+            {"material_prim": "/World/Mat", "texture_type": "diffuse", "texture_path": "/path/diffuse.dds"}
+        ]
+
+        success, msg = self.client.update_textures_batch(textures)
+
+        self.assertFalse(success)
+        self.assertEqual(msg, "Internal Error")
 
 if __name__ == "__main__":
     unittest.main()

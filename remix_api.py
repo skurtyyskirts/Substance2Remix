@@ -534,26 +534,20 @@ class RemixAPIClient:
         return False, result.get("error", "Save failed.")
 
     def update_textures_batch(self, textures_to_update):
-        if not textures_to_update: return True, "No textures."
+        """
+        Updates multiple textures at once via the bulk patch endpoint.
+        textures_to_update: list of dicts: [{"material_prim": ..., "texture_type": ..., "texture_path": ...}, ...]
+        """
+        if not textures_to_update:
+            return True, "No textures to update"
+        payload = {
+            "updates": textures_to_update
+        }
+        res = self.make_request("PATCH", "/stagecraft/material/textures/bulk", json_payload=payload)
         
-        payload_list = []
-        path_errors = []
-        for usd_attr, ingested_path in textures_to_update:
-            if not ingested_path or not os.path.isabs(ingested_path):
-                path_errors.append(f"Path not absolute: {usd_attr}")
-                continue
-            payload_list.append([usd_attr.replace('\\', '/'), ingested_path.replace(os.sep, '/')])
+        if not res["success"]:
+            return False, res.get("error", "Batch update failed.")
             
-        if not payload_list: return False, "No valid paths."
-        
-        payload = {"force": True, "textures": payload_list}
-        result = self.make_request('PUT', '/stagecraft/textures/', json_payload=payload)
-        
-        if not result["success"]:
-            return False, result.get("error", "Batch update failed.")
-        
-        if path_errors:
-            return True, f"Success with warnings: {path_errors}"
         return True, None
 
     def ping(self, timeout=2.0):
