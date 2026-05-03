@@ -343,12 +343,18 @@ class RemixAPIClient:
         return mesh_file, material_prim, context_file, None
 
     def get_material_textures(self, material_prim):
-        if not material_prim: return None, "Material prim missing."
-        encoded = urllib.parse.quote(str(material_prim).replace(os.sep, "/"), safe="/")
-        res = self.make_request("GET", f"/stagecraft/assets/{encoded}/textures")
-        if res.get("success") and isinstance(res.get("data"), dict):
-             return res["data"].get("textures", []), None
-        return None, res.get("error", "Failed to get textures.")
+        """
+        Returns a dictionary of texture types to file paths for a given material prim.
+        """
+        if not material_prim:
+            return {}
+        res = self.make_request("GET", "/stagecraft/material/textures", params={"material": material_prim})
+        if not res.get("success"):
+            return {}
+        try:
+            return res.get("data", {}).get("textures", {})
+        except Exception:
+            return {}
 
     def ingest_texture(self, pbr_type, texture_file_path, project_output_dir_abs):
         self._log_info(f"Ingesting {pbr_type}: {self.safe_basename(texture_file_path)}")
