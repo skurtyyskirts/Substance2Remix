@@ -153,5 +153,93 @@ class TestChooseNonOverwritingRoot(unittest.TestCase):
         self.assertEqual(result, "foo")
 
 
+
+class TestForcePushRootConflicts(unittest.TestCase):
+    def setUp(self):
+        self.tp = _make_processor()
+        self.fake_dir = "/fake/ingest/dir"
+
+    def test_invalid_arguments_returns_false(self):
+        self.assertFalse(self.tp._force_push_root_conflicts(None, self.fake_dir))
+        self.assertFalse(self.tp._force_push_root_conflicts("", self.fake_dir))
+        self.assertFalse(self.tp._force_push_root_conflicts("root", None))
+        self.assertFalse(self.tp._force_push_root_conflicts("root", ""))
+
+    @patch("os.path.isdir")
+    def test_invalid_directory_returns_false(self, mock_isdir):
+        mock_isdir.return_value = False
+        self.assertFalse(self.tp._force_push_root_conflicts("root", self.fake_dir))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_listdir_exception_returns_false(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.side_effect = Exception("test exception")
+        self.assertFalse(self.tp._force_push_root_conflicts("root", self.fake_dir))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_exact_match(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["root.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", self.fake_dir))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_case_insensitive_match(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["RoOt.DDs"]
+        self.assertTrue(self.tp._force_push_root_conflicts("rOoT", self.fake_dir))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_rtex_dds_extension(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["root.rtex.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", self.fake_dir))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_underscore_delimiter(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["root_albedo.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", self.fake_dir))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_dash_delimiter(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["root-normal.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", self.fake_dir))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_dot_delimiter(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["root.roughness.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("root", self.fake_dir))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_no_delimiter_with_suffix_returns_false(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        # "root1" starts with "root" but character after "root" is "1" which is not in ("", ".", "_", "-")
+        mock_listdir.return_value = ["root1.dds"]
+        self.assertFalse(self.tp._force_push_root_conflicts("root", self.fake_dir))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_ignores_non_dds_files(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["root.png", "root.txt", "root"]
+        self.assertFalse(self.tp._force_push_root_conflicts("root", self.fake_dir))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_ignores_non_matching_prefix(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["other_root.dds", "myroot.dds"]
+        self.assertFalse(self.tp._force_push_root_conflicts("root", self.fake_dir))
+
 if __name__ == "__main__":
     unittest.main()
