@@ -8,11 +8,12 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+_RequestException = type("RequestException", (OSError,), {})
+_ConnErr = type("ConnectionError", (_RequestException,), {})
+_Timeout = type("Timeout", (_RequestException,), {})
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
+_req_mock.exceptions.RequestException = _RequestException
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -22,7 +23,11 @@ from remix_api import RemixAPIClient  # noqa: E402
 
 def _make_client(base_url="http://localhost:8011"):
     settings = {"api_base_url": base_url}
+    import remix_api
+    remix_api.requests = sys.modules['requests']
     return RemixAPIClient(settings_getter=lambda: settings, logger=MagicMock())
+
+
 
 
 def _mock_response(status=200, body=None):
@@ -159,3 +164,64 @@ class TestPing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestGetProjectDefaultOutputDir(unittest.TestCase):
+    def test_success_directory_path(self):
+        client = _make_client()
+        sess = _mock_session()
+        # Mock successful response with directory_path
+        sess.request.return_value = _mock_response(200, {"directory_path": "C:\\some\\dir\\path"})
+
+        with patch.object(client, "_get_session", return_value=sess):
+            path, error = client.get_project_default_output_dir()
+
+        self.assertIsNone(error)
+        self.assertEqual(path, os.path.abspath(os.path.normpath("C:\\some\\dir\\path")))
+
+    def test_success_asset_path(self):
+        client = _make_client()
+        sess = _mock_session()
+        # Mock successful response with asset_path (fallback)
+        sess.request.return_value = _mock_response(200, {"asset_path": "C:\\some\\asset\\path"})
+
+        with patch.object(client, "_get_session", return_value=sess):
+            path, error = client.get_project_default_output_dir()
+
+        self.assertIsNone(error)
+        self.assertEqual(path, os.path.abspath(os.path.normpath("C:\\some\\asset\\path")))
+
+    def test_missing_path(self):
+        client = _make_client()
+        sess = _mock_session()
+        # Mock successful response but missing both directory_path and asset_path
+        sess.request.return_value = _mock_response(200, {})
+
+        with patch.object(client, "_get_session", return_value=sess):
+            path, error = client.get_project_default_output_dir()
+
+        self.assertIsNone(path)
+        self.assertEqual(error, "API success but expected directory path missing.")
+
+    def test_api_failure(self):
+        client = _make_client()
+        sess = _mock_session()
+        # Mock API failure
+        sess.request.return_value = _mock_response(400, {"error": "Some API Error"})
+
+        with patch.object(client, "_get_session", return_value=sess):
+            path, error = client.get_project_default_output_dir()
+
+        self.assertIsNone(path)
+        self.assertEqual(error, "API Error (Status: 400): {'error': 'Some API Error'}")
+
+    def test_path_processing_error(self):
+        client = _make_client()
+        sess = _mock_session()
+        sess.request.return_value = _mock_response(200, {"directory_path": "C:\\some\\dir\\path"})
+
+        with patch.object(client, "_get_session", return_value=sess):
+            with patch("os.path.abspath", side_effect=Exception("Mocked abspath error")):
+                path, error = client.get_project_default_output_dir()
+
+        self.assertIsNone(path)
+        self.assertEqual(error, "Error processing path: Mocked abspath error")
