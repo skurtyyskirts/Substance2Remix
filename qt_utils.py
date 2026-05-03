@@ -1,5 +1,3 @@
-import sys
-
 # Initialize variables to None
 QtWidgets = None
 QtCore = None
