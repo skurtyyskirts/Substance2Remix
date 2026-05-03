@@ -8,11 +8,12 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+_ReqExc = type("RequestException", (OSError,), {})
+_ConnErr = type("ConnectionError", (_ReqExc,), {})
+_Timeout = type("Timeout", (_ReqExc,), {})
+_req_mock.exceptions.RequestException = _ReqExc
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -156,6 +157,38 @@ class TestPing(unittest.TestCase):
             ok, msg = client.ping()
         self.assertFalse(ok)
 
+
+class TestGetMaterialTextures(unittest.TestCase):
+    def test_missing_material_prim(self):
+        client = _make_client()
+        with patch.object(client, "make_request") as mock_make_request:
+            textures = client.get_material_textures(None)
+            self.assertEqual(textures, {})
+            mock_make_request.assert_not_called()
+
+            textures = client.get_material_textures("")
+            self.assertEqual(textures, {})
+            mock_make_request.assert_not_called()
+
+    def test_success_with_textures(self):
+        client = _make_client()
+        with patch.object(client, "make_request", return_value={"success": True, "data": {"textures": {"albedo": "tex1.dds", "normal": "tex2.dds"}}}) as mock_make_request:
+            textures = client.get_material_textures("/World/Looks/Material_1")
+            self.assertEqual(textures, {"albedo": "tex1.dds", "normal": "tex2.dds"})
+            mock_make_request.assert_called_once_with("GET", "/stagecraft/material/textures", params={"material": "/World/Looks/Material_1"})
+
+    def test_api_failure(self):
+        client = _make_client()
+        with patch.object(client, "make_request", return_value={"success": False, "error": "Internal Server Error"}) as mock_make_request:
+            textures = client.get_material_textures("/World/Looks/Material")
+            self.assertEqual(textures, {})
+            mock_make_request.assert_called_once_with("GET", "/stagecraft/material/textures", params={"material": "/World/Looks/Material"})
+
+    def test_api_success_invalid_data(self):
+        client = _make_client()
+        with patch.object(client, "make_request", return_value={"success": True, "data": None}) as mock_make_request:
+            textures = client.get_material_textures("/World/Looks/Material")
+            self.assertEqual(textures, {})
 
 if __name__ == "__main__":
     unittest.main()
