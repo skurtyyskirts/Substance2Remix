@@ -160,3 +160,53 @@ class TestPing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestGetMaterialFromMesh(unittest.TestCase):
+    def test_empty_path(self):
+        client = _make_client()
+        result = client.get_material_from_mesh("")
+        self.assertEqual(result, (None, "Mesh prim path cannot be empty."))
+
+        result = client.get_material_from_mesh(None)
+        self.assertEqual(result, (None, "Mesh prim path cannot be empty."))
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_success(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {
+            "success": True,
+            "data": {"asset_path": r"C:\material\path"}
+        }
+
+        result = client.get_material_from_mesh("/mesh/path")
+        self.assertEqual(result, ("C:/material/path", None))
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_api_failure(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {
+            "success": False,
+            "error": "Some error"
+        }
+
+        result = client.get_material_from_mesh("/mesh/path")
+        self.assertEqual(result, (None, "Some error"))
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_no_asset_path_in_data(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {
+            "success": True,
+            "data": {}
+        }
+
+        result = client.get_material_from_mesh("/mesh/path")
+        self.assertEqual(result, (None, "Failed to query bound material."))
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_exception_handling(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.side_effect = Exception("Some runtime error")
+
+        result = client.get_material_from_mesh("/mesh/path")
+        self.assertEqual(result, (None, "Some runtime error"))
