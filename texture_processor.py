@@ -62,11 +62,6 @@ class TextureProcessor:
             stem = os.path.splitext(stem)[0]
         return stem
 
-    @staticmethod
-    def _strip_ingest_channel_suffix(stem):
-        if not stem: return ""
-        return re.sub(r"\.[armhnoaodse]$", "", str(stem), flags=re.IGNORECASE)
-
     def convert_dds_to_png(self, texconv_exe, dds_file, output_png_target_name_base, output_dir_override=None):
         if not texconv_exe or not os.path.isfile(texconv_exe): 
             raise RuntimeError(f"texconv.exe path is not configured or invalid: {texconv_exe}")
