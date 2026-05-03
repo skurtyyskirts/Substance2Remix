@@ -8,11 +8,12 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+_ReqExc = type("RequestException", (OSError,), {})
+_ConnErr = type("ConnectionError", (_ReqExc,), {})
+_Timeout = type("Timeout", (_ReqExc,), {})
+_req_mock.exceptions.RequestException = _ReqExc
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -159,3 +160,35 @@ class TestPing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGetMaterialTextures(unittest.TestCase):
+    def test_missing_material_prim(self):
+        client = _make_client()
+        textures = client.get_material_textures(None)
+        self.assertEqual(textures, {})
+
+        textures = client.get_material_textures("")
+        self.assertEqual(textures, {})
+
+    def test_success_returns_textures(self):
+        client = _make_client()
+        with patch.object(client, "make_request") as mock_req:
+            mock_req.return_value = {"success": True, "data": {"textures": {"albedo": "albedo.dds"}}}
+            textures = client.get_material_textures("mat_path")
+            self.assertEqual(textures, {"albedo": "albedo.dds"})
+            mock_req.assert_called_once_with("GET", "/stagecraft/material/textures", params={"material": "mat_path"})
+
+    def test_success_but_invalid_data_type(self):
+        client = _make_client()
+        with patch.object(client, "make_request") as mock_req:
+            mock_req.return_value = {"success": True, "data": "not a dict", "error": "Some fallback error"}
+            textures = client.get_material_textures("mat_path")
+            self.assertEqual(textures, {})
+
+    def test_failure_returns_empty_dict(self):
+        client = _make_client()
+        with patch.object(client, "make_request") as mock_req:
+            mock_req.return_value = {"success": False, "error": "API error"}
+            textures = client.get_material_textures("mat_path")
+            self.assertEqual(textures, {})
