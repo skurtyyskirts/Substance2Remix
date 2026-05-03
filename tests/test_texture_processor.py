@@ -155,3 +155,63 @@ class TestChooseNonOverwritingRoot(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestForcePushRootConflicts(unittest.TestCase):
+    def setUp(self):
+        self.tp = _make_processor()
+
+    def test_invalid_args_returns_false(self):
+        self.assertFalse(self.tp._force_push_root_conflicts("", "/fake/dir"))
+        self.assertFalse(self.tp._force_push_root_conflicts(None, "/fake/dir"))
+        self.assertFalse(self.tp._force_push_root_conflicts("root", ""))
+        self.assertFalse(self.tp._force_push_root_conflicts("root", None))
+
+    @patch("os.path.isdir")
+    def test_missing_directory_returns_false(self, mock_isdir):
+        mock_isdir.return_value = False
+        self.assertFalse(self.tp._force_push_root_conflicts("root", "/fake/dir"))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_conflicting_names_return_true(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+
+        # Exact match + extension
+        mock_listdir.return_value = ["mymat.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
+
+        # Different case
+        mock_listdir.return_value = ["MYMAT.DDS"]
+        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
+
+        # Underscore suffix
+        mock_listdir.return_value = ["mymat_albedo.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
+
+        # Hyphen suffix
+        mock_listdir.return_value = ["mymat-normal.rtex.dds"]
+        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_non_conflicting_names_return_false(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+
+        # Starts with root but not followed by delimiter
+        mock_listdir.return_value = ["mymatalbedo.dds"]
+        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
+
+        # Partial root match
+        mock_listdir.return_value = ["myma.dds"]
+        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
+
+        # Different extension
+        mock_listdir.return_value = ["mymat.png"]
+        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir")
+    def test_exception_during_listdir_returns_false(self, mock_listdir, mock_isdir):
+        mock_isdir.return_value = True
+        mock_listdir.side_effect = PermissionError("Access denied")
+        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
