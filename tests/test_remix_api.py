@@ -8,22 +8,21 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_ConnErr = type("ConnectionError", (OSError,), {})
-_Timeout = type("Timeout", (OSError,), {})
+
+_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
+_ConnErr = type("ConnectionError", (_req_mock.exceptions.RequestException,), {})
+_Timeout = type("Timeout", (_req_mock.exceptions.RequestException,), {})
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
-_req_mock.exceptions.RequestException = type("RequestException", (OSError,), {})
 sys.modules.setdefault("requests", _req_mock)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from remix_api import RemixAPIClient  # noqa: E402
 
-
 def _make_client(base_url="http://localhost:8011"):
     settings = {"api_base_url": base_url}
     return RemixAPIClient(settings_getter=lambda: settings, logger=MagicMock())
-
 
 def _mock_response(status=200, body=None):
     r = MagicMock()
@@ -33,11 +32,9 @@ def _mock_response(status=200, body=None):
     r.json.return_value = body or {}
     return r
 
-
 def _mock_session():
     """Return a mock session that make_request can call .request() on."""
     return MagicMock()
-
 
 class TestTLSPolicy(unittest.TestCase):
     """make_request must apply verify=False for loopback and verify=True for remote."""
@@ -71,7 +68,6 @@ class TestTLSPolicy(unittest.TestCase):
             client.make_request("GET", "/test", retries=1, verify_ssl=True)
         _, kwargs = sess.request.call_args
         self.assertTrue(kwargs.get("verify"))
-
 
 class TestRetryLogic(unittest.TestCase):
     def test_retries_on_connection_error(self):
@@ -133,7 +129,6 @@ class TestRetryLogic(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["status_code"], 200)
 
-
 class TestPing(unittest.TestCase):
     def test_ping_success(self):
         client = _make_client()
@@ -155,7 +150,6 @@ class TestPing(unittest.TestCase):
         with patch.object(client, "_get_session", return_value=sess):
             ok, msg = client.ping()
         self.assertFalse(ok)
-
 
 if __name__ == "__main__":
     unittest.main()
