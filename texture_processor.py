@@ -201,24 +201,30 @@ class TextureProcessor:
             self._display_message(f"Error: Blender exception: {e}")
             return None
 
-    def _force_push_root_conflicts(self, root, ingest_dir_abs):
-        if not root or not ingest_dir_abs or not os.path.isdir(ingest_dir_abs): return False
-        root_l = root.lower()
-        try:
-            for fname in os.listdir(ingest_dir_abs):
-                fl = fname.lower()
-                if not (fl.endswith(".dds") or fl.endswith(".rtex.dds")): continue
-                if not fl.startswith(root_l): continue
-                if fl[len(root_l):len(root_l)+1] in ("", ".", "_", "-"): return True
-        except Exception: pass
-        return False
-
     def choose_non_overwriting_root(self, desired_root, ingest_dir_abs):
         desired_root = self._sanitize_filename_stem(desired_root)
         if not desired_root: return desired_root
+
+        existing_files = []
+        if ingest_dir_abs and os.path.isdir(ingest_dir_abs):
+            try:
+                for fname in os.listdir(ingest_dir_abs):
+                    fl = fname.lower()
+                    if fl.endswith(".dds") or fl.endswith(".rtex.dds"):
+                        existing_files.append(fl)
+            except Exception:
+                pass
+
+        def has_conflict(root):
+            root_l = root.lower()
+            for fl in existing_files:
+                if not fl.startswith(root_l): continue
+                if fl[len(root_l):len(root_l)+1] in ("", ".", "_", "-"): return True
+            return False
+
         candidate = desired_root
         idx = 1
-        while self._force_push_root_conflicts(candidate, ingest_dir_abs):
+        while has_conflict(candidate):
             candidate = f"{desired_root}_{idx}"
             idx += 1
             if idx > 9999:
