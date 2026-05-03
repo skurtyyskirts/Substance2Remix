@@ -83,6 +83,15 @@ class TestConvertDdsToPng(unittest.TestCase):
             self.tp.convert_dds_to_png(fake_texconv, "/nonexistent/foo.dds", "foo")
         self.assertIn("not found", str(ctx.exception))
 
+    def test_raises_on_invalid_texconv_executable_name(self):
+        fake_texconv = os.path.join(self.tmpdir, "cmd.exe")
+        open(fake_texconv, "w").close()
+        fake_dds = os.path.join(self.tmpdir, "foo.dds")
+        open(fake_dds, "w").close()
+        with self.assertRaises(RuntimeError) as ctx:
+            self.tp.convert_dds_to_png(fake_texconv, fake_dds, "foo")
+        self.assertIn("Security validation failed", str(ctx.exception))
+
     @patch("subprocess.run")
     def test_raises_on_nonzero_returncode(self, mock_run):
         fake_texconv = os.path.join(self.tmpdir, "texconv.exe")
@@ -155,3 +164,26 @@ class TestChooseNonOverwritingRoot(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestUnwrapMeshWithBlender(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_rejects_invalid_blender_executable_name(self):
+        fake_blender = os.path.join(self.tmpdir, "powershell.exe")
+        open(fake_blender, "w").close()
+        fake_mesh = os.path.join(self.tmpdir, "mesh.obj")
+
+        settings = {
+            "blender_executable_path": fake_blender,
+            "blender_unwrap_script_path": os.path.join(self.tmpdir, "script.py")
+        }
+        tp = _make_processor(settings)
+
+        result = tp.unwrap_mesh_with_blender(fake_mesh)
+        self.assertIsNone(result)
+        # Should have logged error
+        tp.logger.error.assert_called_with("Security validation failed: Invalid Blender executable name 'powershell.exe'.", exc_info=False)

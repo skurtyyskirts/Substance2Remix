@@ -1,0 +1,12 @@
+🔒 Fix arbitrary code execution vulnerability in subprocess invocations
+
+🎯 What:
+The plugin executes `texconv.exe` and `blender` as subprocesses using paths configured in the settings file. A malicious actor modifying `settings.json` could point these executables to arbitrary binaries (e.g., `cmd.exe` or `powershell.exe`) resulting in arbitrary code execution when the user attempts a sync operation.
+
+⚠️ Risk:
+A malicious user modifying the settings file could achieve arbitrary code execution via the vulnerable subprocess calls in `convert_dds_to_png` and `unwrap_mesh_with_blender`. This poses a significant security threat.
+
+🛡️ Solution:
+Added security validations to check the executable basename against a predefined list of allowed binaries (`texconv`, `texconv.exe`) or prefixes (`blender`). If an invalid executable is specified, a runtime error is raised or execution is halted safely.
+
+The `safe_basename` method has also been correctly utilized and test mocks have been updated.

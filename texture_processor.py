@@ -73,6 +73,11 @@ class TextureProcessor:
         if not os.path.isfile(dds_file): 
             raise RuntimeError(f"Input DDS file not found: {dds_file}")
 
+        # Security validation to prevent arbitrary code execution from modified settings
+        exe_name = self.safe_basename(texconv_exe).lower()
+        if exe_name not in ("texconv.exe", "texconv"):
+            raise RuntimeError(f"Security validation failed: Invalid executable name '{exe_name}'. Must be texconv.")
+
         output_dir = output_dir_override if output_dir_override else os.path.dirname(dds_file)
         os.makedirs(output_dir, exist_ok=True)
 
@@ -148,6 +153,13 @@ class TextureProcessor:
             return None
         if not unwrap_script_path:
             self._display_message("Error: Blender unwrap script not found.")
+            return None
+
+        # Security validation to prevent arbitrary code execution from modified settings
+        exe_name = self.safe_basename(blender_exe).lower()
+        if not exe_name.startswith("blender"):
+            self._log_error(f"Security validation failed: Invalid Blender executable name '{exe_name}'.")
+            self._display_message("Error: Security validation failed for Blender path.")
             return None
 
         base, ext = os.path.splitext(input_mesh_path)
