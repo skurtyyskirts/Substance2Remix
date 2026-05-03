@@ -201,13 +201,19 @@ class TextureProcessor:
             self._display_message(f"Error: Blender exception: {e}")
             return None
 
-    def _force_push_root_conflicts(self, root, ingest_dir_abs):
-        if not root or not ingest_dir_abs or not os.path.isdir(ingest_dir_abs): return False
+    def _force_push_root_conflicts(self, root, ingest_dir_abs, pre_filtered_files=None):
+        if not root: return False
         root_l = root.lower()
         try:
-            for fname in os.listdir(ingest_dir_abs):
-                fl = fname.lower()
-                if not (fl.endswith(".dds") or fl.endswith(".rtex.dds")): continue
+            files_to_check = pre_filtered_files if pre_filtered_files is not None else []
+            if pre_filtered_files is None:
+                if not ingest_dir_abs or not os.path.isdir(ingest_dir_abs): return False
+                for fname in os.listdir(ingest_dir_abs):
+                    fl = fname.lower()
+                    if not (fl.endswith(".dds") or fl.endswith(".rtex.dds")): continue
+                    files_to_check.append(fl)
+
+            for fl in files_to_check:
                 if not fl.startswith(root_l): continue
                 if fl[len(root_l):len(root_l)+1] in ("", ".", "_", "-"): return True
         except Exception: pass
@@ -216,9 +222,19 @@ class TextureProcessor:
     def choose_non_overwriting_root(self, desired_root, ingest_dir_abs):
         desired_root = self._sanitize_filename_stem(desired_root)
         if not desired_root: return desired_root
+
+        pre_filtered_files = []
+        if ingest_dir_abs and os.path.isdir(ingest_dir_abs):
+            try:
+                for fname in os.listdir(ingest_dir_abs):
+                    fl = fname.lower()
+                    if fl.endswith(".dds") or fl.endswith(".rtex.dds"):
+                        pre_filtered_files.append(fl)
+            except Exception: pass
+
         candidate = desired_root
         idx = 1
-        while self._force_push_root_conflicts(candidate, ingest_dir_abs):
+        while self._force_push_root_conflicts(candidate, ingest_dir_abs, pre_filtered_files):
             candidate = f"{desired_root}_{idx}"
             idx += 1
             if idx > 9999:
