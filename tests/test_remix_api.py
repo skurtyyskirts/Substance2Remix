@@ -73,6 +73,47 @@ class TestTLSPolicy(unittest.TestCase):
         _, kwargs = sess.request.call_args
         self.assertTrue(kwargs.get("verify"))
 
+    def test_localhost_substring_spoof_uses_verify_true(self):
+        # Regression: a hostile URL that merely *contains* "localhost" as a
+        # substring (e.g. https://localhost.evil.com) must NOT bypass TLS.
+        self.assertTrue(self._capture_verify("https://localhost.evil.com:8011"))
+
+    def test_127_substring_spoof_uses_verify_true(self):
+        # https://127.0.0.1.evil.com would have matched the old substring check
+        self.assertTrue(self._capture_verify("https://127.0.0.1.evil.com"))
+
+    def test_uppercase_localhost_uses_verify_false(self):
+        # Hostname comparison is case-insensitive
+        self.assertFalse(self._capture_verify("http://LOCALHOST:8011"))
+
+
+class TestBaseUrlValidation(unittest.TestCase):
+    """make_request must reject URLs that aren't http/https or lack a host."""
+
+    def _call(self, base_url):
+        client = _make_client(base_url)
+        sess = _mock_session()
+        sess.request.return_value = _mock_response()
+        with patch.object(client, "_get_session", return_value=sess):
+            return client.make_request("GET", "/test", retries=1), sess
+
+    def test_file_scheme_rejected(self):
+        result, sess = self._call("file:///etc/passwd")
+        self.assertFalse(result["success"])
+        self.assertIn("http or https", result["error"])
+        sess.request.assert_not_called()
+
+    def test_ftp_scheme_rejected(self):
+        result, sess = self._call("ftp://remix.example.com")
+        self.assertFalse(result["success"])
+        sess.request.assert_not_called()
+
+    def test_missing_host_rejected(self):
+        result, sess = self._call("http://")
+        self.assertFalse(result["success"])
+        self.assertIn("hostname", result["error"])
+        sess.request.assert_not_called()
+
 
 class TestRetryLogic(unittest.TestCase):
     def test_retries_on_connection_error(self):
