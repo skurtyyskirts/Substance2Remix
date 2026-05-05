@@ -1,5 +1,6 @@
 import os
 import tempfile
+from functools import lru_cache
 from typing import Any, Dict, Tuple
 
 from .plugin_info import PLUGIN_ID
@@ -8,7 +9,14 @@ DEFAULT_REMIX_API_BASE_URL = "http://localhost:8011"
 SETTINGS_VERSION = 1
 
 
+@lru_cache(maxsize=4)
 def _detect_texconv_path(plugin_dir: str) -> str:
+    """Look for the bundled texconv.exe next to the plugin.
+
+    Cached because sanitize_settings() runs on every save and the file does
+    not change beneath us at runtime; without the cache we did a stat per
+    save (cheap, but pointless).
+    """
     try:
         local = os.path.join(plugin_dir, "texconv.exe")
         return local if os.path.isfile(local) else ""

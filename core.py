@@ -814,6 +814,15 @@ class RemixConnectorPlugin(QObject):
                 m = re.search(r"([A-Z0-9]{16})$", str(linked_material_prim))
                 if m:
                     desired_root = m.group(1)
+                else:
+                    # Surfacing this at WARN level: a missed match here means the
+                    # ForcePush filename root falls back to a generic stem and the
+                    # user loses the ability to trace the texture back to the
+                    # specific Remix material via filename.
+                    self.log_warning(
+                        f"Could not extract 16-char hash from material prim "
+                        f"'{linked_material_prim}'; falling back to filename-stem heuristic."
+                    )
                 if not desired_root and exported_files:
                     first_path = next(iter(exported_files.values()))
                     stem = os.path.splitext(os.path.basename(first_path))[0]

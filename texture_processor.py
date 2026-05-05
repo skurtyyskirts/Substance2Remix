@@ -39,6 +39,12 @@ class TextureProcessor:
         else: self._log_info(f"UI Message: {msg}")
 
     @staticmethod
+    def _truncate(text, limit=400):
+        if not text: return ""
+        text = str(text).strip()
+        return text if len(text) <= limit else text[:limit].rstrip() + "...(truncated)"
+
+    @staticmethod
     def safe_basename(path):
         if not path: return ""
         try: return ntpath.basename(str(path))
@@ -182,7 +188,8 @@ class TextureProcessor:
             stderr_text = result.stderr or ""
             if result.returncode != 0 or "Error: Python script fail" in stderr_text:
                 self._log_error(f"Blender failed (Code {result.returncode}). Stderr: {stderr_text}")
-                self._display_message("Error: Blender auto-unwrap failed.")
+                detail = self._truncate(stderr_text) or f"exit code {result.returncode}"
+                self._display_message(f"Blender auto-unwrap failed: {detail}")
                 return None
             
             if os.path.exists(output_mesh_path):
