@@ -103,6 +103,35 @@ class RemixAPIClient:
         try: return ntpath.basename(str(path))
         except Exception: return str(path)
 
+
+    def _build_url(self, settings, url_endpoint):
+        current_api_base = str(settings.get("api_base_url", DEFAULT_REMIX_API_BASE_URL) or DEFAULT_REMIX_API_BASE_URL).rstrip('/')
+        return f"{current_api_base}/{url_endpoint.lstrip('/')}", current_api_base
+
+    def _determine_verify_ssl(self, verify_ssl, api_base_url):
+        if verify_ssl is not None:
+            return verify_ssl
+        try:
+            lower = api_base_url.lower()
+            is_local = ("localhost" in lower) or ("127.0.0.1" in lower) or ("://[::1]" in lower)
+            return False if is_local else True
+        except Exception:
+            return True
+
+    def _prepare_headers(self, headers, json_payload):
+        base_headers = {'Accept': 'application/lightspeed.remix.service+json; version=1.0'}
+        if json_payload is not None and 'Content-Type' not in (headers or {}):
+            base_headers['Content-Type'] = 'application/lightspeed.remix.service+json; version=1.0'
+        return {**base_headers, **(headers or {})}
+
+    def _parse_response_body(self, response):
+        try:
+            if response.content:
+                return response.json()
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return None
+
     def make_request(self, method, url_endpoint, headers=None, json_payload=None, params=None, retries=3, delay=2, timeout=None, verify_ssl=None):
         """
         Performs a Remix REST API request with retries and exponential backoff.
@@ -119,26 +148,13 @@ class RemixAPIClient:
         effective_timeout = timeout if timeout is not None else settings.get("poll_timeout", DEFAULT_POLL_TIMEOUT_SECONDS)
 
         try:
-            current_api_base = str(settings.get("api_base_url", DEFAULT_REMIX_API_BASE_URL) or DEFAULT_REMIX_API_BASE_URL).rstrip('/')
-            full_url = f"{current_api_base}/{url_endpoint.lstrip('/')}"
+            full_url, current_api_base = self._build_url(settings, url_endpoint)
         except Exception as e:
             self._log_error(f"URL construction error: {e}")
             return {"success": False, "status_code": 0, "data": None, "error": "URL construction error."}
 
-        # Default verify behavior: enabled for HTTPS to remote, disabled for
-        # local-loopback HTTP (Remix's typical configuration).
-        if verify_ssl is None:
-            try:
-                lower = current_api_base.lower()
-                is_local = ("localhost" in lower) or ("127.0.0.1" in lower) or ("://[::1]" in lower)
-                verify_ssl = False if is_local else True
-            except Exception:
-                verify_ssl = True
-
-        base_headers = {'Accept': 'application/lightspeed.remix.service+json; version=1.0'}
-        if json_payload is not None and 'Content-Type' not in (headers or {}):
-            base_headers['Content-Type'] = 'application/lightspeed.remix.service+json; version=1.0'
-        effective_headers = {**base_headers, **(headers or {})}
+        effective_verify_ssl = self._determine_verify_ssl(verify_ssl, current_api_base)
+        effective_headers = self._prepare_headers(headers, json_payload)
 
         self._log_debug(f"API Request: {method.upper()} {full_url}")
 
@@ -147,23 +163,13 @@ class RemixAPIClient:
 
         for attempt in range(1, retries + 1):
             try:
-                if session is not None:
-                    response = session.request(
-                        method, full_url, headers=effective_headers, json=json_payload,
-                        params=params, timeout=effective_timeout, verify=verify_ssl,
-                    )
-                else:
-                    response = requests.request(
-                        method, full_url, headers=effective_headers, json=json_payload,
-                        params=params, timeout=effective_timeout, verify=verify_ssl,
-                    )
+                request_func = session.request if session is not None else requests.request
+                response = request_func(
+                    method, full_url, headers=effective_headers, json=json_payload,
+                    params=params, timeout=effective_timeout, verify=effective_verify_ssl,
+                )
 
-                response_data = None
-                try:
-                    if response.content:
-                        response_data = response.json()
-                except (json.JSONDecodeError, ValueError):
-                    pass
+                response_data = self._parse_response_body(response)
 
                 if 200 <= response.status_code < 300:
                     return {
