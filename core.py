@@ -714,15 +714,25 @@ class RemixConnectorPlugin(QObject):
                 self.display_message("Project not linked to Remix.")
                 return
 
-            self.display_message("Exporting textures...")
+            material_hash = meta.get("remix_material_hash")
+            if not material_hash:
+                self.display_message("Push failed: project missing material hash.")
+                return
+
             export_path = self.settings.get("painter_export_path") or os.path.join(tempfile.gettempdir(), "RemixConnector_Export")
             os.makedirs(export_path, exist_ok=True)
 
-            # Ensure required channels exist so export can generate emissive/opacity-based maps.
+            # Channel ensure must run on the main thread (mutates Painter document state).
             self._ensure_required_channels_for_export()
-            exported_files = self._export_textures_main_thread(export_path)
 
-            worker = Worker(self._push_step2_ingest_update, exported_files, force_new_root, linked_material_prim)
+            # Whole pipeline (export + ingest + update) now runs on the worker, so the UI
+            # is responsive throughout. Painter's export API is invoked from the worker,
+            # which has worked in this codebase's pull path (_pull_step4_assign also calls
+            # substance_painter APIs from a worker without issue).
+            worker = Worker(
+                self._push_pipeline,
+                export_path, force_new_root, linked_material_prim, material_hash,
+            )
             worker.signals.result.connect(lambda res: self.display_message(res))
             self._start_worker(worker, title="Push to Remix")
 
@@ -730,18 +740,24 @@ class RemixConnectorPlugin(QObject):
             self.log_error(f"Push Init Failed: {e}", exc_info=True)
             self.display_message(f"Push failed: {e}")
 
-    def _export_textures_main_thread(self, export_path):
+    def _push_pipeline(self, export_path, force_new_root, linked_material_prim, material_hash,
+                       progress_callback=None, status_callback=None):
+        if status_callback: status_callback.emit("Exporting textures...")
+        if progress_callback: progress_callback.emit(5)
+        exported_files = self._export_textures_worker(export_path, material_hash)
+        if progress_callback: progress_callback.emit(40)
+        return self._push_step2_ingest_update(
+            exported_files, force_new_root, linked_material_prim,
+            progress_callback=progress_callback, status_callback=status_callback,
+        )
+
+    def _export_textures_worker(self, export_path, material_hash):
         import substance_painter.export
-        import substance_painter.project
         import substance_painter.textureset
-        
-        meta = substance_painter.project.Metadata("RTXRemixConnectorLink")
-        material_hash = meta.get("remix_material_hash")
-        if not material_hash: raise Exception("Missing material hash")
 
         all_ts = substance_painter.textureset.all_texture_sets()
         if not all_ts: raise Exception("No texture sets")
-        
+
         export_format = self.settings.get("export_file_format", "png")
         preset_name = f"Remix_Dynamic_{material_hash}"
         
