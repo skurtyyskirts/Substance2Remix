@@ -17,6 +17,38 @@ DEFAULT_REMIX_API_BASE_URL = "http://localhost:8011"
 # The ingest endpoint can run for several minutes on large textures.
 INGEST_REQUEST_TIMEOUT_SECONDS = 600.0
 
+# Hostnames for which TLS verification is skipped by default (Remix exposes
+# HTTP on the loopback interface). Compared against the parsed hostname, not
+# a substring of the URL — otherwise a URL like https://localhost.evil.com
+# would slip past loopback detection.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+def _is_local_host(url):
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host in _LOCAL_HOSTS
+
+
+def _validate_base_url(url):
+    """Returns (parsed_url, error_message). error_message is None on success.
+
+    Rejects URLs that aren't http/https or that lack a hostname so we never
+    pass garbage like ``file://...`` or ``ftp://...`` to the requests layer.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception as e:
+        return None, f"Invalid API base URL: {e}"
+    if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
+        return None, f"API base URL must use http or https (got '{parsed.scheme}')."
+    if not parsed.hostname:
+        return None, "API base URL is missing a hostname."
+    return parsed, None
+
 REMIX_ATTR_SUFFIX_TO_PBR_MAP = {
     "diffuse_texture": "albedo", "albedo_texture": "albedo", "basecolor_texture": "albedo", "base_color_texture": "albedo",
     "normalmap_texture": "normal", "normal_texture": "normal", "worldspacenormal_texture": "normal",
@@ -120,20 +152,22 @@ class RemixAPIClient:
 
         try:
             current_api_base = str(settings.get("api_base_url", DEFAULT_REMIX_API_BASE_URL) or DEFAULT_REMIX_API_BASE_URL).rstrip('/')
-            full_url = f"{current_api_base}/{url_endpoint.lstrip('/')}"
         except Exception as e:
             self._log_error(f"URL construction error: {e}")
             return {"success": False, "status_code": 0, "data": None, "error": "URL construction error."}
 
+        _, url_err = _validate_base_url(current_api_base)
+        if url_err:
+            self._log_error(url_err)
+            return {"success": False, "status_code": 0, "data": None, "error": url_err}
+
+        full_url = f"{current_api_base}/{url_endpoint.lstrip('/')}"
+
         # Default verify behavior: enabled for HTTPS to remote, disabled for
-        # local-loopback HTTP (Remix's typical configuration).
+        # local-loopback HTTP (Remix's typical configuration). Hostname is
+        # parsed via urlparse to avoid substring spoofing (localhost.evil.com).
         if verify_ssl is None:
-            try:
-                lower = current_api_base.lower()
-                is_local = ("localhost" in lower) or ("127.0.0.1" in lower) or ("://[::1]" in lower)
-                verify_ssl = False if is_local else True
-            except Exception:
-                verify_ssl = True
+            verify_ssl = not _is_local_host(current_api_base)
 
         base_headers = {'Accept': 'application/lightspeed.remix.service+json; version=1.0'}
         if json_payload is not None and 'Content-Type' not in (headers or {}):
