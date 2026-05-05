@@ -8,9 +8,9 @@ from unittest.mock import patch, MagicMock
 # in environments where requests is not installed (e.g. minimal CI images).
 # remix_api treats requests as optional and guards all usage behind _get_session().
 _req_mock = MagicMock()
-_RequestException = type("RequestException", (OSError,), {})
-_ConnErr = type("ConnectionError", (_RequestException,), {})
-_Timeout = type("Timeout", (_RequestException,), {})
+class _RequestException(OSError): pass
+class _ConnErr(_RequestException): pass
+class _Timeout(_RequestException): pass
 _req_mock.exceptions.RequestException = _RequestException
 _req_mock.exceptions.ConnectionError = _ConnErr
 _req_mock.exceptions.Timeout = _Timeout
