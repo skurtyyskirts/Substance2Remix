@@ -219,6 +219,8 @@ class RemixConnectorPlugin(QObject):
         with self._workers_lock:
             self._active_workers.discard(worker)
             dlg = self._active_progress_dialogs.pop(worker, None)
+        # If shutdown closed the dialog already, dlg is None here and we just
+        # release the worker's WorkerSignals.
         if dlg is not None:
             try:
                 dlg.close()
@@ -228,7 +230,6 @@ class RemixConnectorPlugin(QObject):
                 dlg.deleteLater()
             except Exception:
                 pass
-        # Drop the WorkerSignals QObject promptly to avoid lingering connections.
         try:
             worker.signals.deleteLater()
         except Exception:
@@ -237,9 +238,12 @@ class RemixConnectorPlugin(QObject):
     def shutdown(self, wait_ms=5000):
         """
         Cleanly tear the plugin down: stop accepting new work, close
-        progress dialogs, disconnect every still-running worker's
-        signals so they cannot fire callbacks at this (about-to-be
-        deleted) instance, and wait briefly for in-flight workers.
+        progress dialogs, then wait briefly for in-flight workers.
+
+        We do NOT disconnect worker signals — receivers check
+        ``_shutting_down`` and no-op safely. Disconnecting was previously
+        causing ingest results to be silently discarded when Painter
+        closed during a long operation.
 
         Returns True if the threadpool drained inside ``wait_ms``; the
         caller should only release ``self`` (e.g. ``deleteLater``) when
@@ -249,7 +253,6 @@ class RemixConnectorPlugin(QObject):
 
         with self._workers_lock:
             dialogs = list(self._active_progress_dialogs.values())
-            workers = list(self._active_workers)
             self._active_progress_dialogs.clear()
 
         for dlg in dialogs:
@@ -259,19 +262,6 @@ class RemixConnectorPlugin(QObject):
                 pass
             try:
                 dlg.deleteLater()
-            except Exception:
-                pass
-
-        # Sever every connection on still-running workers so they cannot
-        # call back into us (or our dialogs) after we're gone. The Worker
-        # itself emits via signals.error / signals.result / signals.finished;
-        # disconnecting the WorkerSignals QObject removes every receiver.
-        for w in workers:
-            try:
-                w.signals.disconnect()
-            except (RuntimeError, TypeError):
-                # No connections / already disconnected.
-                pass
             except Exception:
                 pass
 
@@ -406,6 +396,12 @@ class RemixConnectorPlugin(QObject):
             sp_logging.error(tb)
 
     def display_message(self, msg):
+        # Workers can fire results after shutdown begins (Painter closing,
+        # plugin reload). We must not touch Painter's UI in that window —
+        # log instead so the result is preserved in the log file.
+        if self._shutting_down:
+            self.log_info(f"[shutdown] {msg}")
+            return
         try:
             import substance_painter.ui
             substance_painter.ui.display_message(str(msg))
@@ -437,6 +433,8 @@ class RemixConnectorPlugin(QObject):
     def _on_worker_error(self, err_tuple):
         exctype, value, tb = err_tuple
         self.log_error(f"Worker Error: {value}\n{tb}")
+        # display_message itself drops to a log-only path during shutdown,
+        # so we don't need to gate this branch separately.
         self.display_message(f"Operation failed: {value}")
 
     # --- Actions ---
@@ -947,12 +945,22 @@ class RemixConnectorPlugin(QObject):
             pass
 
         def _test_connection(candidate_settings):
+            tmp_client = None
             try:
                 candidate = sanitize_settings(candidate_settings or {}, PLUGIN_DIR)
                 tmp_client = RemixAPIClient(lambda: candidate, self.logger_adapter)
                 return tmp_client.ping(timeout=2.0)
             except Exception as e:
                 return False, str(e)
+            finally:
+                # Each ping creates a requests.Session under the hood. Without
+                # this close(), repeatedly clicking "Test Connection" leaks one
+                # session (TCP pool + FDs) per click.
+                if tmp_client is not None:
+                    try:
+                        tmp_client.close()
+                    except Exception:
+                        pass
 
         dialog = create_settings_dialog_instance(
             self.settings,
@@ -1072,10 +1080,10 @@ PLUGIN_SETTINGS = {}
 
 def setup_logging():
     global plugin_instance, PLUGIN_SETTINGS
-    # If a previous instance exists (reload scenario), tear it down first
-    # so its workers/dialogs don't leak. shutdown() severs signal
-    # connections so any still-running workers cannot fire callbacks
-    # into the old instance, even when waitForDone times out.
+    # On reload: tear down the previous instance, then pump Qt's event loop so
+    # deleteLater() actually runs before we instantiate the new plugin. Without
+    # the pump, the old QObject can linger long enough that worker signals
+    # routed via QueuedConnection arrive at a half-deleted instance.
     if plugin_instance is not None:
         try:
             drained = bool(plugin_instance.shutdown(wait_ms=2000))
@@ -1086,6 +1094,11 @@ def setup_logging():
                 plugin_instance.deleteLater()
             except Exception:
                 pass
+        try:
+            if QtCore is not None:
+                QtCore.QCoreApplication.processEvents()
+        except Exception:
+            pass
     plugin_instance = RemixConnectorPlugin()
     PLUGIN_SETTINGS = plugin_instance.settings
 
