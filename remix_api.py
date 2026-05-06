@@ -292,6 +292,25 @@ class RemixAPIClient:
         if mesh_subpath_match:
             return mesh_subpath_match.group(1)
         return None
+    def _extract_mesh_paths(self, potential_paths_data):
+        abs_context = None
+        rel_mesh = None
+
+        for entry in potential_paths_data:
+            files = []
+            if isinstance(entry, list) and len(entry) == 2 and isinstance(entry[1], list): files = entry[1]
+            elif isinstance(entry, list): files = entry
+            elif isinstance(entry, str): files = [entry]
+
+            for f in files:
+                if isinstance(f, str):
+                    if os.path.isabs(f): abs_context = f.replace('\\', '/')
+                    elif any(f.lower().endswith(ext) for ext in ['.usd', '.usda', '.usdc', '.obj', '.fbx', '.gltf', '.glb']):
+                        rel_mesh = f.replace('\\', '/')
+
+            if abs_context and rel_mesh: break
+
+        return rel_mesh, abs_context
 
     def _get_mesh_file_path_from_prim(self, prim_path_to_query):
         if not prim_path_to_query: return None, None, "Prim path empty.", 0
@@ -303,22 +322,7 @@ class RemixAPIClient:
                 data = paths_result["data"]
                 potential_paths_data = data.get("reference_paths", data.get("asset_paths", []))
                 
-                abs_context = None
-                rel_mesh = None
-
-                for entry in potential_paths_data:
-                    files = []
-                    if isinstance(entry, list) and len(entry) == 2 and isinstance(entry[1], list): files = entry[1]
-                    elif isinstance(entry, list): files = entry
-                    elif isinstance(entry, str): files = [entry]
-
-                    for f in files:
-                        if isinstance(f, str):
-                            if os.path.isabs(f): abs_context = f.replace('\\', '/')
-                            elif any(f.lower().endswith(ext) for ext in ['.usd', '.usda', '.usdc', '.obj', '.fbx', '.gltf', '.glb']):
-                                rel_mesh = f.replace('\\', '/')
-                    
-                    if abs_context and rel_mesh: break
+                rel_mesh, abs_context = self._extract_mesh_paths(potential_paths_data)
                 
                 if rel_mesh: return rel_mesh, abs_context, None, paths_result.get('status_code')
                 return None, None, "Could not determine paths.", paths_result.get('status_code')
@@ -326,6 +330,8 @@ class RemixAPIClient:
             return None, None, paths_result.get('error'), paths_result.get('status_code')
         except Exception as e:
             return None, None, str(e), 0
+
+
 
     def get_selected_asset_details(self):
         self._log_info("Getting selected asset details from Remix...")
