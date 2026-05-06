@@ -295,3 +295,110 @@ class TestGetMaterialFromMesh(unittest.TestCase):
 
         result = client.get_material_from_mesh("/mesh/path")
         self.assertEqual(result, (None, "Some runtime error"))
+
+
+class TestGetMaterialTextures(unittest.TestCase):
+    @patch.object(RemixAPIClient, "make_request")
+    def test_returns_textures_list(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {
+            "success": True,
+            "data": {"textures": [["albedo_texture", "/path/foo.dds"], ["normal_texture", "/path/bar.dds"]]},
+        }
+        textures, err = client.get_material_textures("/Looks/Mat")
+        self.assertIsNone(err)
+        self.assertEqual(len(textures), 2)
+        self.assertEqual(textures[0][0], "albedo_texture")
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_empty_data_returns_empty_list(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {"success": True, "data": {}}
+        textures, err = client.get_material_textures("/Looks/Mat")
+        self.assertIsNone(err)
+        self.assertEqual(textures, [])
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_api_failure(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {"success": False, "error": "boom"}
+        textures, err = client.get_material_textures("/Looks/Mat")
+        self.assertIsNone(textures)
+        self.assertEqual(err, "boom")
+
+    def test_empty_prim_path(self):
+        client = _make_client()
+        textures, err = client.get_material_textures("")
+        self.assertIsNone(textures)
+        self.assertIn("missing", err.lower())
+
+
+class TestUpdateTexturesBatch(unittest.TestCase):
+    @patch.object(RemixAPIClient, "make_request")
+    def test_empty_input_short_circuits(self, mock_make_request):
+        client = _make_client()
+        ok, msg = client.update_textures_batch([])
+        self.assertTrue(ok)
+        # No HTTP call should have been made
+        mock_make_request.assert_not_called()
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_relative_paths_rejected(self, mock_make_request):
+        client = _make_client()
+        # Non-absolute path should be flagged and skipped; with only-relative inputs, no HTTP is made.
+        ok, msg = client.update_textures_batch([("/Mat/Shader.inputs:diffuse_texture", "relative/path.dds")])
+        self.assertFalse(ok)
+        mock_make_request.assert_not_called()
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_absolute_paths_succeed(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {"success": True, "data": {}}
+        abs_path = os.path.abspath("/foo/bar.rtex.dds")
+        ok, msg = client.update_textures_batch([
+            ("/Mat/Shader.inputs:diffuse_texture", abs_path),
+        ])
+        self.assertTrue(ok)
+        # PUT to /stagecraft/textures/ with payload containing forced=True
+        method, endpoint = mock_make_request.call_args[0][:2]
+        kwargs = mock_make_request.call_args[1]
+        self.assertEqual(method, "PUT")
+        self.assertEqual(endpoint, "/stagecraft/textures/")
+        payload = kwargs.get("json_payload") or {}
+        self.assertTrue(payload.get("force"))
+        # Path should be forward-slashed in the payload
+        self.assertEqual(len(payload.get("textures", [])), 1)
+        self.assertNotIn("\\", payload["textures"][0][1])
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_api_failure_propagated(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {"success": False, "error": "remix said no"}
+        ok, msg = client.update_textures_batch([
+            ("/Mat/Shader.inputs:diffuse_texture", os.path.abspath("/foo/bar.dds")),
+        ])
+        self.assertFalse(ok)
+        self.assertEqual(msg, "remix said no")
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_partial_success_returned_with_warnings(self, mock_make_request):
+        # One absolute path, one relative — HTTP call goes out for the absolute one,
+        # but we expect a warnings-suffixed success message.
+        client = _make_client()
+        mock_make_request.return_value = {"success": True, "data": {}}
+        ok, msg = client.update_textures_batch([
+            ("/Mat/Shader.inputs:diffuse_texture", os.path.abspath("/foo/bar.dds")),
+            ("/Mat/Shader.inputs:normal_texture", "relative.dds"),
+        ])
+        self.assertTrue(ok)
+        self.assertIn("warning", msg.lower())
+
+
+class TestIngestTextureFailFast(unittest.TestCase):
+    @patch.object(RemixAPIClient, "make_request")
+    def test_missing_file_short_circuits(self, mock_make_request):
+        client = _make_client()
+        result, err = client.ingest_texture("albedo", "/no/such/file.png", "/tmp/out")
+        self.assertIsNone(result)
+        self.assertIn("not found", err.lower())
+        mock_make_request.assert_not_called()
