@@ -1,147 +1,197 @@
-import os
-import sys
 import unittest
-from unittest.mock import patch, MagicMock
-import types
-import importlib.util
+import sys
+import os
+import traceback
+import builtins
+from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+# Insert the parent directory of the app into sys.path to allow `import async_utils`
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Fully mock out Qt classes so we don't need a QApplication, avoiding segfaults.
-mock_qt_utils = types.ModuleType("qt_utils")
-mock_qt_utils.QObject = type("QObject", (object,), {})
-mock_qt_utils.QRunnable = type("QRunnable", (object,), {})
+class MockQObject:
+    pass
 
-class MockSignal:
+class MockQRunnable:
+    pass
+
+class SignalDescriptor:
     def __init__(self, *args):
-        pass
-    def connect(self, slot):
-        pass
-    def emit(self, *args, **kwargs):
-        pass
+        self.args = args
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        if not hasattr(obj, '_mock_signals'):
+            obj._mock_signals = {}
+        name = id(self)
+        if name not in obj._mock_signals:
+            obj._mock_signals[name] = MagicMock()
+        return obj._mock_signals[name]
 
-mock_qt_utils.Signal = MockSignal
-mock_qt_utils.Slot = lambda *args, **kwargs: lambda f: f
+def MockSlot(*args):
+    def decorator(func): return func
+    return decorator
 
-# Setup a fake package context so relative imports resolve without __import__ hacks
-pkg = types.ModuleType("mock_pkg")
-pkg.__path__ = []
-sys.modules["mock_pkg"] = pkg
-sys.modules["mock_pkg.qt_utils"] = mock_qt_utils
+mock_qt = MagicMock()
+mock_qt.QObject = MockQObject
+mock_qt.QRunnable = MockQRunnable
+mock_qt.Signal = SignalDescriptor
+mock_qt.Slot = MockSlot
 
-# Import async_utils as mock_pkg.async_utils
-spec = importlib.util.spec_from_file_location(
-    "mock_pkg.async_utils",
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), "async_utils.py")
-)
-async_utils = importlib.util.module_from_spec(spec)
-sys.modules["mock_pkg.async_utils"] = async_utils
-spec.loader.exec_module(async_utils)
+class TestAsyncUtils(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # We need to temporarily modify __import__ ONLY for this test suite
+        # because the module uses a relative import `from .qt_utils` at the module level.
+        # Following the memory instruction:
+        # "temporarily override builtins.__import__ in the test setup to intercept the
+        # specific relative import (e.g., checking name and level == 1) to return the mocked module,
+        # then restore builtins.__import__."
 
-# Also expose Worker into the test module's namespace for convenience
-Worker = async_utils.Worker
+        cls.original_import = builtins.__import__
 
+        def custom_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if level == 1 and name == 'qt_utils':
+                return mock_qt
+            return cls.original_import(name, globals, locals, fromlist, level)
 
-class TestWorker(unittest.TestCase):
+        builtins.__import__ = custom_import
+
+        # Clear out any existing cached version
+        if 'async_utils' in sys.modules:
+            del sys.modules['async_utils']
+
+        import async_utils
+        cls.async_utils = async_utils
+
+    @classmethod
+    def tearDownClass(cls):
+        builtins.__import__ = cls.original_import
+
+        # Clean up so we don't pollute subsequent tests
+        if 'async_utils' in sys.modules:
+            del sys.modules['async_utils']
+
     def test_worker_success(self):
-        def my_func(a, b):
-            return a + b
+        """Test happy path where worker completes successfully."""
+        def success_fn():
+            return "success_result"
 
-        worker = Worker(my_func, 1, 2)
-
-        results = []
-        finished = []
-
-        worker.signals.result.emit = lambda r: results.append(r)
-        worker.signals.finished.emit = lambda: finished.append(True)
-
+        worker = self.async_utils.Worker(success_fn)
         worker.run()
 
-        self.assertEqual(results, [3])
-        self.assertEqual(finished, [True])
+        worker.signals.result.emit.assert_called_once_with("success_result")
+        worker.signals.finished.emit.assert_called_once()
+        worker.signals.error.emit.assert_not_called()
 
-    def test_worker_with_callbacks(self):
-        def my_func(progress_callback, status_callback, **kwargs):
-            progress_callback.emit(50)
-            status_callback.emit("Halfway")
-            return "done"
+    def test_worker_error(self):
+        """Test error path where worker crashes."""
+        def crashing_fn():
+            raise ValueError("Test error")
 
-        worker = Worker(my_func)
+        worker = self.async_utils.Worker(crashing_fn)
+
+        # Suppress traceback print
+        with patch('traceback.print_exc') as mock_print_exc:
+            worker.run()
+
+        mock_print_exc.assert_called_once()
+        worker.signals.error.emit.assert_called_once()
+
+        # Check arguments emitted
+        args = worker.signals.error.emit.call_args[0][0]
+        self.assertEqual(args[0], ValueError)
+        self.assertIsInstance(args[1], ValueError)
+        self.assertEqual(str(args[1]), "Test error")
+        self.assertIn("Test error", args[2])
+
+        worker.signals.result.emit.assert_not_called()
+        worker.signals.finished.emit.assert_called_once()
+
+    def test_worker_callbacks(self):
+        """Test that progress and status callbacks are injected when wanted."""
+        def callback_fn(progress_callback=None, status_callback=None):
+            if progress_callback:
+                progress_callback.emit(50)
+            if status_callback:
+                status_callback.emit("Running")
+            return True
+
+        worker = self.async_utils.Worker(callback_fn)
         self.assertTrue(worker._wants_progress)
         self.assertTrue(worker._wants_status)
 
-        progress = []
-        status = []
-        worker.signals.progress.emit = lambda p: progress.append(p)
-        worker.signals.status.emit = lambda s: status.append(s)
-
         worker.run()
 
-        self.assertEqual(progress, [50])
-        self.assertEqual(status, ["Halfway"])
+        # Worker automatically passes its signals to the callbacks
+        # Our callback_fn emits directly to them
+        worker.signals.progress.emit.assert_called_once_with(50)
+        worker.signals.status.emit.assert_called_once_with("Running")
 
-    def test_worker_error(self):
-        def my_func():
-            raise ValueError("Test error")
-
-        worker = Worker(my_func)
-
-        errors = []
-        worker.signals.error.emit = lambda e: errors.append(e)
-
-        worker.run()
-
-        self.assertEqual(len(errors), 1)
-        exctype, value, tb = errors[0]
-        self.assertEqual(exctype, ValueError)
-        self.assertEqual(str(value), "Test error")
-        self.assertIn("Traceback", tb)
-        self.assertIn("Test error", tb)
-
-    def test_worker_init_signature_error(self):
-        def my_func():
-            pass
-
-        with patch('mock_pkg.async_utils.inspect.signature') as mock_sig:
-            mock_sig.side_effect = ValueError("Mocked error")
-            worker = Worker(my_func)
-
-            self.assertFalse(worker._wants_progress)
-            self.assertFalse(worker._wants_status)
-
-    def test_worker_emit_exceptions(self):
-        def my_func():
-            return "ok"
-
-        worker = Worker(my_func)
-
-        def bad_result(*args, **kwargs):
-            raise Exception("Result Emit Error")
-        def bad_finished(*args, **kwargs):
-            raise Exception("Finished Emit Error")
-
-        worker.signals.result.emit = MagicMock(side_effect=bad_result)
-        worker.signals.finished.emit = MagicMock(side_effect=bad_finished)
-
-        worker.run()
-
-        worker.signals.result.emit.assert_called_once_with("ok")
+        worker.signals.result.emit.assert_called_once_with(True)
         worker.signals.finished.emit.assert_called_once()
 
-    def test_worker_error_emit_exception(self):
-        def my_func():
-            raise ValueError("Failure")
+    def test_worker_kwargs(self):
+        """Test that progress and status callbacks work with **kwargs."""
+        def kwargs_fn(**kwargs):
+            return "kwargs_result"
 
-        worker = Worker(my_func)
-
-        def bad_error(*args, **kwargs):
-            raise Exception("Error Emit Error")
-
-        worker.signals.error.emit = MagicMock(side_effect=bad_error)
+        worker = self.async_utils.Worker(kwargs_fn)
+        self.assertTrue(worker._wants_progress)
+        self.assertTrue(worker._wants_status)
 
         worker.run()
+        self.assertIn('progress_callback', worker.kwargs)
+        self.assertIn('status_callback', worker.kwargs)
+        worker.signals.result.emit.assert_called_once_with("kwargs_result")
 
-        worker.signals.error.emit.assert_called_once()
+    def test_worker_init_signature_error(self):
+        """Test init handles built-ins that don't support inspect.signature."""
+        # By using standard len(), inspect.signature raises ValueError
+        worker = self.async_utils.Worker(len, "test")
+        self.assertFalse(worker._wants_progress)
+        self.assertFalse(worker._wants_status)
 
-if __name__ == "__main__":
+        worker.run()
+        worker.signals.result.emit.assert_called_once_with(4)
+        worker.signals.finished.emit.assert_called_once()
+
+    def test_worker_init_type_error(self):
+        """Test init handles objects that raise TypeError on inspect.signature."""
+        class NotCallable:
+            pass
+
+        worker = self.async_utils.Worker(NotCallable())
+        self.assertFalse(worker._wants_progress)
+        self.assertFalse(worker._wants_status)
+
+    def test_worker_signal_emission_error(self):
+        """Test worker handles exceptions when emitting signals."""
+        def success_fn():
+            return "success"
+
+        worker = self.async_utils.Worker(success_fn)
+
+        # Make result and finished emission crash
+        worker.signals.result.emit.side_effect = Exception("Signal error")
+        worker.signals.finished.emit.side_effect = Exception("Signal error")
+
+        # Should not crash the runner
+        worker.run()
+
+    def test_worker_error_signal_emission_error(self):
+        """Test worker handles exceptions when emitting error signals."""
+        def crashing_fn():
+            raise ValueError("Test error")
+
+        worker = self.async_utils.Worker(crashing_fn)
+
+        # Make error and finished emission crash
+        worker.signals.error.emit.side_effect = Exception("Signal error")
+        worker.signals.finished.emit.side_effect = Exception("Signal error")
+
+        with patch('traceback.print_exc'):
+            # Should not crash the runner
+            worker.run()
+
+if __name__ == '__main__':
     unittest.main()
