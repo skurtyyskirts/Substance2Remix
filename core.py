@@ -7,6 +7,11 @@ import time
 import shutil
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
+
+# Cap concurrent texconv subprocesses / ingest HTTP calls. The HTTPAdapter pool
+# in remix_api uses pool_maxsize=8, so 4 leaves room for the final batch update.
+_PIPELINE_MAX_WORKERS = min(4, (os.cpu_count() or 4))
 
 # Local imports
 from . import dependency_manager
@@ -545,41 +550,54 @@ class RemixConnectorPlugin(QObject):
         if status_callback: status_callback.emit("Fetching textures from Remix...")
         textures, err = self.remix_api.get_material_textures(material_prim)
         if err: raise Exception(err)
-        
+
         remix_proj_dir, _ = self.remix_api.get_project_default_output_dir()
         project_name = self.remix_api.derive_project_name_from_dir(remix_proj_dir)
         dest_dir = os.path.join(PLUGIN_DIR, "Pulled Textures", project_name)
         os.makedirs(dest_dir, exist_ok=True)
-        
-        processed_textures = [] 
-        
+
+        # Pre-resolve texconv once outside the loop (was looked up per-texture).
+        texconv = self.settings.get("texconv_path")
+        if not texconv or not os.path.isfile(texconv):
+            local = os.path.join(PLUGIN_DIR, "texconv.exe")
+            if os.path.isfile(local):
+                texconv = local
+
+        # Phase 1: filter textures down to those we actually need to process.
+        # This is fast, sequential, and lets us know N for the progress bar.
+        work_items = []
         for usd_attr, tex_path_raw in textures:
             input_name = (usd_attr.split(':')[-1] if ':' in usd_attr else os.path.basename(usd_attr)).lower()
             pbr_type = REMIX_ATTR_SUFFIX_TO_PBR_MAP.get(input_name)
             if not pbr_type: continue
-            
             abs_path = os.path.normpath(tex_path_raw) if os.path.isabs(tex_path_raw) else (os.path.join(remix_proj_dir, tex_path_raw) if remix_proj_dir else None)
             if not abs_path or not os.path.isfile(abs_path): continue
-            
-            final_path = abs_path
+            work_items.append((pbr_type, abs_path))
+
+        if not work_items:
+            return []
+
+        total = len(work_items)
+        done_counter = [0]
+        progress_lock = threading.Lock()
+
+        def _bump_progress():
+            with progress_lock:
+                done_counter[0] += 1
+                pct = int(100 * done_counter[0] / total)
+            if progress_callback:
+                try: progress_callback.emit(pct)
+                except Exception: pass
+
+        def _process_one(pbr_type, abs_path):
             if abs_path.lower().endswith((".dds", ".rtex.dds")):
-                if status_callback:
-                    status_callback.emit(f"Converting {os.path.basename(abs_path)}...")
-
-                texconv = self.settings.get("texconv_path")
-                if not texconv or not os.path.isfile(texconv):
-                    local = os.path.join(PLUGIN_DIR, "texconv.exe")
-                    if os.path.isfile(local):
-                        texconv = local
-
                 if not texconv:
-                    self.log_warning("texconv.exe not configured; cannot convert DDS to PNG. Skipping.")
-                    continue
-
+                    self.log_warning(f"texconv.exe not configured; skipping {os.path.basename(abs_path)}.")
+                    return None
                 try:
                     final_path = self.texture_processor.convert_dds_to_png(texconv, abs_path, "", dest_dir)
                 except Exception as e:
-                    self.log_warning(f"Conversion failed: {e}")
+                    self.log_warning(f"Conversion failed for {os.path.basename(abs_path)}: {e}")
                     # Fallback: copy the DDS as-is and try importing it directly into Painter.
                     try:
                         dds_target = os.path.join(dest_dir, os.path.basename(abs_path))
@@ -589,7 +607,7 @@ class RemixConnectorPlugin(QObject):
                         self.log_warning(f"Using DDS directly (texconv failed): {os.path.basename(final_path)}")
                     except Exception as e2:
                         self.log_warning(f"Fallback DDS copy failed: {e2}")
-                        continue
+                        return None
             else:
                 try:
                     target = os.path.join(dest_dir, os.path.basename(abs_path))
@@ -597,11 +615,30 @@ class RemixConnectorPlugin(QObject):
                     final_path = target
                 except Exception as e:
                     self.log_warning(f"Failed to copy {abs_path}: {e}")
-                    continue
+                    return None
 
             if final_path and os.path.isfile(final_path):
-                processed_textures.append((pbr_type, final_path))
-            
+                return (pbr_type, final_path)
+            return None
+
+        if status_callback:
+            status_callback.emit(f"Converting {total} texture{'s' if total != 1 else ''}...")
+
+        processed_textures = []
+        # Each iteration is independent (separate input file, separate output file in dest_dir),
+        # so we run them in a small thread pool. Order is preserved via map().
+        with ThreadPoolExecutor(max_workers=min(_PIPELINE_MAX_WORKERS, total)) as pool:
+            futures = [pool.submit(_process_one, pbr, path) for pbr, path in work_items]
+            for fut in futures:
+                try:
+                    res = fut.result()
+                    if res is not None:
+                        processed_textures.append(res)
+                except Exception as e:
+                    self.log_warning(f"Texture worker raised: {e}")
+                finally:
+                    _bump_progress()
+
         return processed_textures
 
     def _pull_step4_assign(self, processed_textures):
@@ -853,14 +890,39 @@ class RemixConnectorPlugin(QObject):
             except Exception as e:
                 self.log_warning(f"Force Push rename step failed (continuing without rename): {e}")
 
+        # Run ingest_texture concurrently. Each call is one HTTP POST against the
+        # Remix ingest endpoint; the shared requests.Session has pool_maxsize=8
+        # and Remix tolerates concurrent ingests, so 4-way parallelism cuts a
+        # 5-texture push from ~150-300s sequential to ~60s.
         ingested_paths = {}
-        for pbr, path in exported_files.items():
-            res, err = self.remix_api.ingest_texture(pbr, path, remix_proj_dir)
-            if res:
-                ingested_paths[pbr] = res
-            else:
-                self.log_warning(f"Ingest failed for {pbr}: {err}")
-            
+        items = list(exported_files.items())
+        if items:
+            total_ingest = len(items)
+            done_counter = [0]
+            progress_lock = threading.Lock()
+
+            def _ingest_one(pbr, path):
+                return pbr, self.remix_api.ingest_texture(pbr, path, remix_proj_dir)
+
+            with ThreadPoolExecutor(max_workers=min(_PIPELINE_MAX_WORKERS, total_ingest)) as pool:
+                futures = [pool.submit(_ingest_one, pbr, path) for pbr, path in items]
+                for fut in futures:
+                    try:
+                        pbr, (res, err) = fut.result()
+                        if res:
+                            ingested_paths[pbr] = res
+                        else:
+                            self.log_warning(f"Ingest failed for {pbr}: {err}")
+                    except Exception as e:
+                        self.log_warning(f"Ingest worker raised: {e}")
+                    finally:
+                        with progress_lock:
+                            done_counter[0] += 1
+                            pct = int(100 * done_counter[0] / total_ingest)
+                        if progress_callback:
+                            try: progress_callback.emit(pct)
+                            except Exception: pass
+
         if not ingested_paths: raise Exception("Ingestion failed")
         
         if status_callback: status_callback.emit("Updating Remix...")
