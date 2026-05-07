@@ -568,7 +568,7 @@ class RemixConnectorPlugin(QObject):
         if status_callback: status_callback.emit("Fetching textures from Remix...")
         textures = self.remix_api.get_material_textures(material_prim)
         if not textures:
-            raise Exception("No textures found for material.")
+            raise Exception(f"No textures found for material: {material_prim}")
 
         remix_proj_dir = self.remix_api.get_project_default_output_dir()
         project_name = self.remix_api.derive_project_name_from_dir(remix_proj_dir) or "UnknownProject"

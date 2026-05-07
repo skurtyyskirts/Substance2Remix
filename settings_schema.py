@@ -167,8 +167,9 @@ def atomic_write_json(path: str, data: Dict[str, Any]) -> Tuple[bool, str]:
             json.dump(data, f, indent=4)
         try:
             os.chmod(tmp_path, 0o600)
-        except Exception:
-            pass
+        except Exception as chmod_err:
+            import warnings
+            warnings.warn(f"[RemixConnector] Could not set file permissions on {tmp_path}: {chmod_err}")
         os.replace(tmp_path, path)
         return True, ""
     except Exception as e:

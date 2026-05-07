@@ -64,7 +64,7 @@ class TextureProcessor:
             raise RuntimeError(f"texconv.exe path is not configured or invalid: {texconv_exe}")
 
         # Security check: Ensure the executable is actually texconv
-        texconv_basename = self.safe_basename(texconv_exe).lower()
+        texconv_basename = os.path.basename(os.path.realpath(texconv_exe)).lower()
         if texconv_basename not in ("texconv", "texconv.exe"):
             raise RuntimeError(f"Security error: Invalid executable name '{texconv_basename}' for texconv.")
 
@@ -146,7 +146,7 @@ class TextureProcessor:
             return None
 
         # Security check: Ensure the executable is actually blender
-        blender_basename = self.safe_basename(blender_exe).lower()
+        blender_basename = os.path.basename(os.path.realpath(blender_exe)).lower()
         if blender_basename not in ("blender", "blender.exe"):
             self._log_error(f"Security error: Invalid executable name '{blender_basename}' for Blender.")
             self._display_message("Error: Invalid Blender executable name.")
