@@ -299,38 +299,35 @@ class TestGetMaterialFromMesh(unittest.TestCase):
 
 class TestGetMaterialTextures(unittest.TestCase):
     @patch.object(RemixAPIClient, "make_request")
-    def test_returns_textures_list(self, mock_make_request):
+    def test_returns_textures_dict(self, mock_make_request):
         client = _make_client()
         mock_make_request.return_value = {
             "success": True,
-            "data": {"textures": [["albedo_texture", "/path/foo.dds"], ["normal_texture", "/path/bar.dds"]]},
+            "data": {"textures": {"inputs:diffuse_texture": "/path/foo.dds", "inputs:normalmap_texture": "/path/bar.dds"}},
         }
-        textures, err = client.get_material_textures("/Looks/Mat")
-        self.assertIsNone(err)
+        textures = client.get_material_textures("/Looks/Mat")
+        self.assertIsInstance(textures, dict)
         self.assertEqual(len(textures), 2)
-        self.assertEqual(textures[0][0], "albedo_texture")
+        self.assertIn("inputs:diffuse_texture", textures)
 
     @patch.object(RemixAPIClient, "make_request")
-    def test_empty_data_returns_empty_list(self, mock_make_request):
+    def test_empty_data_returns_empty_dict(self, mock_make_request):
         client = _make_client()
         mock_make_request.return_value = {"success": True, "data": {}}
-        textures, err = client.get_material_textures("/Looks/Mat")
-        self.assertIsNone(err)
-        self.assertEqual(textures, [])
+        textures = client.get_material_textures("/Looks/Mat")
+        self.assertEqual(textures, {})
 
     @patch.object(RemixAPIClient, "make_request")
-    def test_api_failure(self, mock_make_request):
+    def test_api_failure_returns_empty_dict(self, mock_make_request):
         client = _make_client()
         mock_make_request.return_value = {"success": False, "error": "boom"}
-        textures, err = client.get_material_textures("/Looks/Mat")
-        self.assertIsNone(textures)
-        self.assertEqual(err, "boom")
+        textures = client.get_material_textures("/Looks/Mat")
+        self.assertEqual(textures, {})
 
-    def test_empty_prim_path(self):
+    def test_empty_prim_path_returns_empty_dict(self):
         client = _make_client()
-        textures, err = client.get_material_textures("")
-        self.assertIsNone(textures)
-        self.assertIn("missing", err.lower())
+        textures = client.get_material_textures("")
+        self.assertEqual(textures, {})
 
 
 class TestUpdateTexturesBatch(unittest.TestCase):
@@ -343,55 +340,29 @@ class TestUpdateTexturesBatch(unittest.TestCase):
         mock_make_request.assert_not_called()
 
     @patch.object(RemixAPIClient, "make_request")
-    def test_relative_paths_rejected(self, mock_make_request):
-        client = _make_client()
-        # Non-absolute path should be flagged and skipped; with only-relative inputs, no HTTP is made.
-        ok, msg = client.update_textures_batch([("/Mat/Shader.inputs:diffuse_texture", "relative/path.dds")])
-        self.assertFalse(ok)
-        mock_make_request.assert_not_called()
-
-    @patch.object(RemixAPIClient, "make_request")
-    def test_absolute_paths_succeed(self, mock_make_request):
+    def test_bulk_patch_endpoint_used(self, mock_make_request):
         client = _make_client()
         mock_make_request.return_value = {"success": True, "data": {}}
-        abs_path = os.path.abspath("/foo/bar.rtex.dds")
-        ok, msg = client.update_textures_batch([
-            ("/Mat/Shader.inputs:diffuse_texture", abs_path),
-        ])
+        updates = [{"material_prim": "/Looks/Mat", "texture_type": "diffuse_texture", "texture_path": "/foo/bar.rtex.dds"}]
+        ok, msg = client.update_textures_batch(updates)
         self.assertTrue(ok)
-        # PUT to /stagecraft/textures/ with payload containing forced=True
         method, endpoint = mock_make_request.call_args[0][:2]
         kwargs = mock_make_request.call_args[1]
-        self.assertEqual(method, "PUT")
-        self.assertEqual(endpoint, "/stagecraft/textures/")
+        self.assertEqual(method, "PATCH")
+        self.assertEqual(endpoint, "/stagecraft/material/textures/bulk")
         payload = kwargs.get("json_payload") or {}
-        self.assertTrue(payload.get("force"))
-        # Path should be forward-slashed in the payload
-        self.assertEqual(len(payload.get("textures", [])), 1)
-        self.assertNotIn("\\", payload["textures"][0][1])
+        self.assertIn("updates", payload)
+        self.assertEqual(payload["updates"], updates)
 
     @patch.object(RemixAPIClient, "make_request")
     def test_api_failure_propagated(self, mock_make_request):
         client = _make_client()
         mock_make_request.return_value = {"success": False, "error": "remix said no"}
         ok, msg = client.update_textures_batch([
-            ("/Mat/Shader.inputs:diffuse_texture", os.path.abspath("/foo/bar.dds")),
+            {"material_prim": "/Mat", "texture_type": "diffuse_texture", "texture_path": "/foo/bar.dds"},
         ])
         self.assertFalse(ok)
         self.assertEqual(msg, "remix said no")
-
-    @patch.object(RemixAPIClient, "make_request")
-    def test_partial_success_returned_with_warnings(self, mock_make_request):
-        # One absolute path, one relative — HTTP call goes out for the absolute one,
-        # but we expect a warnings-suffixed success message.
-        client = _make_client()
-        mock_make_request.return_value = {"success": True, "data": {}}
-        ok, msg = client.update_textures_batch([
-            ("/Mat/Shader.inputs:diffuse_texture", os.path.abspath("/foo/bar.dds")),
-            ("/Mat/Shader.inputs:normal_texture", "relative.dds"),
-        ])
-        self.assertTrue(ok)
-        self.assertIn("warning", msg.lower())
 
 
 class TestIngestTextureFailFast(unittest.TestCase):
@@ -402,3 +373,116 @@ class TestIngestTextureFailFast(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("not found", err.lower())
         mock_make_request.assert_not_called()
+
+
+class TestIngestTexture(unittest.TestCase):
+    def setUp(self):
+        self.client = _make_client()
+
+    @patch("os.path.isfile")
+    def test_file_not_found(self, mock_isfile):
+        mock_isfile.return_value = False
+        res, err = self.client.ingest_texture("albedo", "/fake/path.png", "/out")
+        self.assertIsNone(res)
+        self.assertIn("File not found", err)
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_api_request_failed(self, mock_makedirs, mock_isfile):
+        mock_isfile.return_value = True
+        with patch.object(self.client, "make_request", return_value={"success": False, "error": "API Error"}):
+            res, err = self.client.ingest_texture("albedo", "/fake/path.png", "/out")
+        self.assertIsNone(res)
+        self.assertEqual(err, "API Error")
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_api_response_missing_path(self, mock_makedirs, mock_isfile):
+        mock_isfile.return_value = True
+        mock_response = {"success": True, "data": {"completed_schemas": []}}
+        with patch.object(self.client, "make_request", return_value=mock_response):
+            res, err = self.client.ingest_texture("albedo", "/fake/path.png", "/out")
+        self.assertIsNone(res)
+        self.assertIn("Could not identify output path", err)
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_happy_path_with_expected_suffix(self, mock_makedirs, mock_isfile):
+        mock_isfile.return_value = True
+        mock_response = {"success": True, "data": {"content": ["path.a.rtex.dds", "path.n.rtex.dds"]}}
+        with patch.object(self.client, "make_request", return_value=mock_response):
+            res, err = self.client.ingest_texture("albedo", "/fake/path.png", "/out")
+        self.assertIsNotNone(res)
+        self.assertTrue(res.endswith("path.a.rtex.dds") or res.endswith(os.path.join("path.a.rtex.dds")))
+        self.assertIsNone(err)
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_fallback_match_when_suffix_missing(self, mock_makedirs, mock_isfile):
+        mock_isfile.return_value = True
+        mock_response = {"success": True, "data": {"content": ["path.rtex.dds"]}}
+        with patch.object(self.client, "make_request", return_value=mock_response):
+            res, err = self.client.ingest_texture("albedo", "/fake/path.png", "/out")
+        self.assertIsNotNone(res)
+        self.assertTrue(res.endswith("path.rtex.dds"))
+        self.assertIsNone(err)
+
+    @patch("os.path.isfile")
+    @patch("os.makedirs")
+    def test_missing_final_file(self, mock_makedirs, mock_isfile):
+        mock_isfile.side_effect = [True, False]
+        mock_response = {"success": True, "data": {"content": ["path.a.rtex.dds"]}}
+        with patch.object(self.client, "make_request", return_value=mock_response):
+            res, err = self.client.ingest_texture("albedo", "/fake/path.png", "/out")
+        self.assertIsNone(res)
+        self.assertIn("File missing:", err)
+
+
+class TestGetProjectDefaultOutputDir(unittest.TestCase):
+    @patch.object(RemixAPIClient, "make_request")
+    def test_success_returns_dir(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {
+            "success": True,
+            "data": {"default_output_dir": "/some/project/dir"},
+        }
+        result = client.get_project_default_output_dir()
+        self.assertEqual(result, "/some/project/dir")
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_api_failure_returns_none(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {"success": False, "error": "not found"}
+        result = client.get_project_default_output_dir()
+        self.assertIsNone(result)
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_missing_key_returns_none(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {"success": True, "data": {}}
+        result = client.get_project_default_output_dir()
+        self.assertIsNone(result)
+
+
+class TestDeriveProjectNameFromDir(unittest.TestCase):
+    @patch.object(RemixAPIClient, "make_request")
+    def test_success_returns_name(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {
+            "success": True,
+            "data": {"name": "MyProject"},
+        }
+        result = client.derive_project_name_from_dir("/some/dir")
+        self.assertEqual(result, "MyProject")
+
+    @patch.object(RemixAPIClient, "make_request")
+    def test_api_failure_returns_none(self, mock_make_request):
+        client = _make_client()
+        mock_make_request.return_value = {"success": False}
+        result = client.derive_project_name_from_dir("/some/dir")
+        self.assertIsNone(result)
+
+    def test_empty_dir_returns_none(self):
+        client = _make_client()
+        result = client.derive_project_name_from_dir("")
+        self.assertIsNone(result)

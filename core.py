@@ -17,7 +17,7 @@ _PIPELINE_MAX_WORKERS = min(4, (os.cpu_count() or 4))
 from . import dependency_manager
 from .qt_utils import QObject, Signal, Slot, QThread, QRunnable, QThreadPool, QtWidgets, QtCore, QT_BINDING
 from .plugin_info import PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_REPO_URL, PLUGIN_DESCRIPTION
-from .remix_api import RemixAPIClient, REMIX_ATTR_SUFFIX_TO_PBR_MAP, PBR_TO_REMIX_INGEST_VALIDATION_TYPE_MAP
+from .remix_api import RemixAPIClient, REMIX_ATTR_SUFFIX_TO_PBR_MAP
 from .texture_processor import TextureProcessor
 from .painter_controller import PainterController
 from .async_utils import Worker
@@ -46,12 +46,32 @@ LOG_FILE_PATH = os.path.join(LOG_DIR, "remix_connector.log")
 PBR_TO_MDL_INPUT_MAP = {
     "albedo": "diffuse_texture",
     "normal": "normalmap_texture",
-    "height": "height_texture",
+    "height": "displacement_texture",
     "roughness": "reflectionroughness_texture",
     "metallic": "metallic_texture",
-    "emissive": "emissive_mask_texture",
+    "emissive": "emissive_color_texture",
     "opacity": "opacity_texture",
+    "ao": "ao_texture",
 }
+
+PBR_TO_MDL_INPUT_MAP_SPECULAR_GLOSSINESS = {
+    "albedo": "diffuse_texture",
+    "specular": "specular_texture",
+    "glossiness": "glossiness_texture",
+    "normal": "normalmap_texture",
+    "height": "displacement_texture",
+    "emissive": "emissive_color_texture",
+    "opacity": "opacity_texture",
+    "ao": "ao_texture",
+}
+
+
+def get_pbr_to_mdl_map(settings=None):
+    """Returns the appropriate PBR-to-MDL map based on the workflow setting."""
+    workflow = (settings or {}).get("texture_workflow", "Metallic/Roughness")
+    if workflow == "Specular/Glossiness":
+        return PBR_TO_MDL_INPUT_MAP_SPECULAR_GLOSSINESS
+    return PBR_TO_MDL_INPUT_MAP
 
 class _ProgressBridge(QObject):
     """
@@ -546,11 +566,12 @@ class RemixConnectorPlugin(QObject):
 
     def _pull_step3_fetch_process_textures(self, material_prim, progress_callback=None, status_callback=None):
         if status_callback: status_callback.emit("Fetching textures from Remix...")
-        textures, err = self.remix_api.get_material_textures(material_prim)
-        if err: raise Exception(err)
+        textures = self.remix_api.get_material_textures(material_prim)
+        if not textures:
+            raise Exception("No textures found for material.")
 
-        remix_proj_dir, _ = self.remix_api.get_project_default_output_dir()
-        project_name = self.remix_api.derive_project_name_from_dir(remix_proj_dir)
+        remix_proj_dir = self.remix_api.get_project_default_output_dir()
+        project_name = self.remix_api.derive_project_name_from_dir(remix_proj_dir) or "UnknownProject"
         dest_dir = os.path.join(PLUGIN_DIR, "Pulled Textures", project_name)
         os.makedirs(dest_dir, exist_ok=True)
 
@@ -564,7 +585,7 @@ class RemixConnectorPlugin(QObject):
         # Phase 1: filter textures down to those we actually need to process.
         # This is fast, sequential, and lets us know N for the progress bar.
         work_items = []
-        for usd_attr, tex_path_raw in textures:
+        for usd_attr, tex_path_raw in textures.items():
             input_name = (usd_attr.split(':')[-1] if ':' in usd_attr else os.path.basename(usd_attr)).lower()
             pbr_type = REMIX_ATTR_SUFFIX_TO_PBR_MAP.get(input_name)
             if not pbr_type: continue
@@ -851,7 +872,7 @@ class RemixConnectorPlugin(QObject):
         if not exported_files: return "No files exported."
         
         if status_callback: status_callback.emit("Ingesting textures...")
-        remix_proj_dir, _ = self.remix_api.get_project_default_output_dir()
+        remix_proj_dir = self.remix_api.get_project_default_output_dir()
         
         # Force Push: avoid overwriting existing ingested textures by renaming exported files to a non-conflicting root.
         if force_new_root and remix_proj_dir:
@@ -933,11 +954,16 @@ class RemixConnectorPlugin(QObject):
         if not ingested_paths: raise Exception("Ingestion failed")
         
         if status_callback: status_callback.emit("Updating Remix...")
+        pbr_to_mdl = get_pbr_to_mdl_map(self.settings)
         textures_to_update = []
         for pbr, path in ingested_paths.items():
-            mdl = PBR_TO_MDL_INPUT_MAP.get(pbr)
-            if pbr == "metallic" and mdl == "metalness_texture": mdl = "metallic_texture"
-            if mdl: textures_to_update.append((f"{linked_material_prim}/Shader.inputs:{mdl}", path))
+            mdl = pbr_to_mdl.get(pbr)
+            if mdl:
+                textures_to_update.append({
+                    "material_prim": linked_material_prim,
+                    "texture_type": mdl,
+                    "texture_path": path,
+                })
             
         success, err = self.remix_api.update_textures_batch(textures_to_update)
         if not success: raise Exception(f"Update failed: {err}")

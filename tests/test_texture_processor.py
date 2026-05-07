@@ -32,23 +32,6 @@ class TestSanitizeFilename(unittest.TestCase):
         self.assertEqual(_make_processor()._sanitize_filename_stem(""), "")
 
 
-class TestStripKnownTextureExtensions(unittest.TestCase):
-    def test_strips_dds(self):
-        self.assertEqual(TextureProcessor._strip_known_texture_extensions("foo.dds"), "foo")
-
-    def test_strips_rtex_dds(self):
-        self.assertEqual(TextureProcessor._strip_known_texture_extensions("foo.rtex.dds"), "foo")
-
-    def test_strips_png(self):
-        self.assertEqual(TextureProcessor._strip_known_texture_extensions("bar.png"), "bar")
-
-    def test_handles_windows_path(self):
-        result = TextureProcessor._strip_known_texture_extensions(r"C:\textures\foo.dds")
-        self.assertEqual(result, "foo")
-
-
-
-
 class TestConvertDdsToPng(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -139,65 +122,69 @@ class TestChooseNonOverwritingRoot(unittest.TestCase):
         self.assertEqual(result, "foo")
 
 
+class TestSafeBasename(unittest.TestCase):
+    def test_none_returns_empty_string(self):
+        self.assertEqual(TextureProcessor.safe_basename(None), "")
+
+    def test_empty_string_returns_empty_string(self):
+        self.assertEqual(TextureProcessor.safe_basename(""), "")
+
+    def test_forward_slashes(self):
+        self.assertEqual(TextureProcessor.safe_basename("some/path/file.dds"), "file.dds")
+
+    def test_backslashes(self):
+        self.assertEqual(TextureProcessor.safe_basename("some\\path\\file.dds"), "file.dds")
+
+    def test_mixed_slashes(self):
+        self.assertEqual(TextureProcessor.safe_basename("some/mixed\\path/file.dds"), "file.dds")
+
+    def test_no_slashes(self):
+        self.assertEqual(TextureProcessor.safe_basename("file.dds"), "file.dds")
+
+    def test_non_string_object(self):
+        import pathlib
+        path = pathlib.Path("some/path/file.dds")
+        self.assertEqual(TextureProcessor.safe_basename(path), "file.dds")
+
+    @patch("ntpath.basename")
+    def test_exception_fallback(self, mock_basename):
+        mock_basename.side_effect = Exception("Test exception")
+        self.assertEqual(TextureProcessor.safe_basename("some/path/file.dds"), "some/path/file.dds")
+
+
+class TestUnwrapMeshWithBlender(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.tp = _make_processor({
+            "blender_executable_path": os.path.join(self.tmpdir, "blender.exe"),
+            "blender_unwrap_script_path": os.path.join(self.tmpdir, "unwrap.py")
+        })
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_returns_none_if_blender_has_invalid_name(self):
+        fake_blender = os.path.join(self.tmpdir, "malicious.exe")
+        open(fake_blender, "w").close()
+        self.tp.settings_getter = lambda: {
+            "blender_executable_path": fake_blender,
+            "blender_unwrap_script_path": os.path.join(self.tmpdir, "unwrap.py")
+        }
+        result = self.tp.unwrap_mesh_with_blender("/some/mesh.obj")
+        self.assertIsNone(result)
+
+    def test_returns_none_if_unwrap_script_has_invalid_extension(self):
+        fake_blender = os.path.join(self.tmpdir, "blender.exe")
+        open(fake_blender, "w").close()
+        fake_script = os.path.join(self.tmpdir, "unwrap.bat")
+        open(fake_script, "w").close()
+        self.tp.settings_getter = lambda: {
+            "blender_executable_path": fake_blender,
+            "blender_unwrap_script_path": fake_script
+        }
+        result = self.tp.unwrap_mesh_with_blender("/some/mesh.obj")
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()
-
-class TestForcePushRootConflicts(unittest.TestCase):
-    def setUp(self):
-        self.tp = _make_processor()
-
-    def test_invalid_args_returns_false(self):
-        self.assertFalse(self.tp._force_push_root_conflicts("", "/fake/dir"))
-        self.assertFalse(self.tp._force_push_root_conflicts(None, "/fake/dir"))
-        self.assertFalse(self.tp._force_push_root_conflicts("root", ""))
-        self.assertFalse(self.tp._force_push_root_conflicts("root", None))
-
-    @patch("os.path.isdir")
-    def test_missing_directory_returns_false(self, mock_isdir):
-        mock_isdir.return_value = False
-        self.assertFalse(self.tp._force_push_root_conflicts("root", "/fake/dir"))
-
-    @patch("os.path.isdir")
-    @patch("os.listdir")
-    def test_conflicting_names_return_true(self, mock_listdir, mock_isdir):
-        mock_isdir.return_value = True
-
-        # Exact match + extension
-        mock_listdir.return_value = ["mymat.dds"]
-        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
-
-        # Different case
-        mock_listdir.return_value = ["MYMAT.DDS"]
-        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
-
-        # Underscore suffix
-        mock_listdir.return_value = ["mymat_albedo.dds"]
-        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
-
-        # Hyphen suffix
-        mock_listdir.return_value = ["mymat-normal.rtex.dds"]
-        self.assertTrue(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
-
-    @patch("os.path.isdir")
-    @patch("os.listdir")
-    def test_non_conflicting_names_return_false(self, mock_listdir, mock_isdir):
-        mock_isdir.return_value = True
-
-        # Starts with root but not followed by delimiter
-        mock_listdir.return_value = ["mymatalbedo.dds"]
-        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
-
-        # Partial root match
-        mock_listdir.return_value = ["myma.dds"]
-        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
-
-        # Different extension
-        mock_listdir.return_value = ["mymat.png"]
-        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))
-
-    @patch("os.path.isdir")
-    @patch("os.listdir")
-    def test_exception_during_listdir_returns_false(self, mock_listdir, mock_isdir):
-        mock_isdir.return_value = True
-        mock_listdir.side_effect = PermissionError("Access denied")
-        self.assertFalse(self.tp._force_push_root_conflicts("mymat", "/fake/dir"))

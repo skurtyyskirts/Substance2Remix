@@ -189,6 +189,20 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
             self.log_level.setCurrentIndex(idx)
         layout.addRow("Log Level", self.log_level)
 
+        self.texture_workflow = QtWidgets.QComboBox()
+        self.texture_workflow.addItems(["Metallic/Roughness", "Specular/Glossiness"])
+        wf_idx = self.texture_workflow.findText(self._settings.get("texture_workflow", "Metallic/Roughness"))
+        if wf_idx >= 0:
+            self.texture_workflow.setCurrentIndex(wf_idx)
+        layout.addRow("Texture Workflow", self.texture_workflow)
+
+        self.normal_format = QtWidgets.QComboBox()
+        self.normal_format.addItems(["DirectX", "OpenGL"])
+        nf_idx = self.normal_format.findText(self._settings.get("normal_format", "DirectX"))
+        if nf_idx >= 0:
+            self.normal_format.setCurrentIndex(nf_idx)
+        layout.addRow("Normal Map Format", self.normal_format)
+
         # Blender Smart UV parameters
         self.uv_angle = QtWidgets.QDoubleSpinBox()
         self.uv_angle.setRange(0.0, 89.0)
@@ -276,6 +290,8 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         s["include_opacity_map"] = bool(self.include_opacity.isChecked())
 
         s["log_level"] = self.log_level.currentText().strip().lower()
+        s["texture_workflow"] = self.texture_workflow.currentText().strip()
+        s["normal_format"] = self.normal_format.currentText().strip()
         s["blender_smart_uv_angle_limit"] = float(self.uv_angle.value())
         s["blender_smart_uv_island_margin"] = float(self.uv_margin.value())
         s["blender_smart_uv_area_weight"] = float(self.uv_area.value())
@@ -321,6 +337,14 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         idx = self.log_level.findText(lvl)
         if idx >= 0:
             self.log_level.setCurrentIndex(idx)
+
+        wf_idx = self.texture_workflow.findText(self._settings.get("texture_workflow", "Metallic/Roughness"))
+        if wf_idx >= 0:
+            self.texture_workflow.setCurrentIndex(wf_idx)
+
+        nf_idx = self.normal_format.findText(self._settings.get("normal_format", "DirectX"))
+        if nf_idx >= 0:
+            self.normal_format.setCurrentIndex(nf_idx)
 
         self.uv_angle.setValue(float(self._settings.get("blender_smart_uv_angle_limit", 66.0)))
         self.uv_margin.setValue(float(self._settings.get("blender_smart_uv_island_margin", 0.003)))

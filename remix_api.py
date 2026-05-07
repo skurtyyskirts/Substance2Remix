@@ -57,6 +57,9 @@ REMIX_ATTR_SUFFIX_TO_PBR_MAP = {
     "metallic_texture": "metallic", "metalness_texture": "metallic",
     "emissive_mask_texture": "emissive", "emissive_texture": "emissive", "emissive_color_texture": "emissive",
     "opacity_texture": "opacity", "opacitymask_texture": "opacity", "opacity": "opacity", "transparency_texture": "opacity",
+    "specular_texture": "specular",
+    "glossiness_texture": "glossiness", "gloss_texture": "glossiness",
+    "ao_texture": "ao", "ambient_occlusion_texture": "ao",
 }
 
 PBR_TO_REMIX_INGEST_VALIDATION_TYPE_MAP = {
@@ -232,41 +235,26 @@ class RemixAPIClient:
         return {"success": False, "status_code": 0, "data": None, "error": last_error_message}
 
     def get_project_default_output_dir(self):
-        self._log_info("Getting Remix project default output directory...")
-        result = self.make_request('GET', "/stagecraft/assets/default-directory")
-
-        if result["success"] and isinstance(result.get("data"), dict):
-            default_dir_raw = result["data"].get("directory_path") or result["data"].get("asset_path")
-            if isinstance(default_dir_raw, str):
-                try:
-                    default_dir_abs = os.path.abspath(os.path.normpath(default_dir_raw))
-                    return default_dir_abs, None
-                except Exception as e:
-                    return None, f"Error processing path: {e}"
-            else:
-                return None, "API success but expected directory path missing."
-        return None, result['error'] or "Failed to get default directory from Remix API."
+        """Returns the default output directory from the Remix API."""
+        res = self.make_request("GET", "/stagecraft/project/default_output_dir")
+        if not res.get("success"):
+            return None
+        try:
+            return res.get("data", {}).get("default_output_dir")
+        except Exception:
+            return None
 
     def derive_project_name_from_dir(self, remix_dir_path):
-        if not remix_dir_path: return "UnknownProject"
+        """Asks Stagecraft to guess the project name for a given directory."""
+        if not remix_dir_path:
+            return None
+        res = self.make_request("GET", "/stagecraft/project/name", params={"dir": remix_dir_path})
+        if not res.get("success"):
+            return None
         try:
-            path_norm = os.path.abspath(os.path.normpath(remix_dir_path))
-            parts = []
-            cursor = path_norm
-            for _ in range(6):
-                base = os.path.basename(cursor)
-                if base: parts.append(base)
-                parent = os.path.dirname(cursor)
-                if parent == cursor: break
-                cursor = parent
-            
-            known_tail_names = {"textures", "painterconnector_ingested", "ingested", "captures", "assets", "output", "export"}
-            for name in parts:
-                if name.lower() not in known_tail_names and name:
-                    return name
+            return res.get("data", {}).get("name")
         except Exception:
-            pass
-        return "UnknownProject"
+            return None
 
     def get_material_from_mesh(self, mesh_prim_path):
         if not mesh_prim_path: return None, "Mesh prim path cannot be empty."
@@ -293,6 +281,26 @@ class RemixAPIClient:
             return mesh_subpath_match.group(1)
         return None
 
+    def _extract_mesh_paths(self, potential_paths_data):
+        abs_context = None
+        rel_mesh = None
+
+        for entry in potential_paths_data:
+            files = []
+            if isinstance(entry, list) and len(entry) == 2 and isinstance(entry[1], list): files = entry[1]
+            elif isinstance(entry, list): files = entry
+            elif isinstance(entry, str): files = [entry]
+
+            for f in files:
+                if isinstance(f, str):
+                    if os.path.isabs(f): abs_context = f.replace('\\', '/')
+                    elif any(f.lower().endswith(ext) for ext in ['.usd', '.usda', '.usdc', '.obj', '.fbx', '.gltf', '.glb']):
+                        rel_mesh = f.replace('\\', '/')
+
+            if abs_context and rel_mesh: break
+
+        return rel_mesh, abs_context
+
     def _get_mesh_file_path_from_prim(self, prim_path_to_query):
         if not prim_path_to_query: return None, None, "Prim path empty.", 0
         try:
@@ -302,24 +310,9 @@ class RemixAPIClient:
             if paths_result.get("success") and isinstance(paths_result.get("data"), dict):
                 data = paths_result["data"]
                 potential_paths_data = data.get("reference_paths", data.get("asset_paths", []))
-                
-                abs_context = None
-                rel_mesh = None
 
-                for entry in potential_paths_data:
-                    files = []
-                    if isinstance(entry, list) and len(entry) == 2 and isinstance(entry[1], list): files = entry[1]
-                    elif isinstance(entry, list): files = entry
-                    elif isinstance(entry, str): files = [entry]
+                rel_mesh, abs_context = self._extract_mesh_paths(potential_paths_data)
 
-                    for f in files:
-                        if isinstance(f, str):
-                            if os.path.isabs(f): abs_context = f.replace('\\', '/')
-                            elif any(f.lower().endswith(ext) for ext in ['.usd', '.usda', '.usdc', '.obj', '.fbx', '.gltf', '.glb']):
-                                rel_mesh = f.replace('\\', '/')
-                    
-                    if abs_context and rel_mesh: break
-                
                 if rel_mesh: return rel_mesh, abs_context, None, paths_result.get('status_code')
                 return None, None, "Could not determine paths.", paths_result.get('status_code')
             
@@ -376,12 +369,16 @@ class RemixAPIClient:
         return mesh_file, material_prim, context_file, None
 
     def get_material_textures(self, material_prim):
-        if not material_prim: return None, "Material prim missing."
-        encoded = urllib.parse.quote(str(material_prim).replace(os.sep, "/"), safe="/")
-        res = self.make_request("GET", f"/stagecraft/assets/{encoded}/textures")
-        if res.get("success") and isinstance(res.get("data"), dict):
-             return res["data"].get("textures", []), None
-        return None, res.get("error", "Failed to get textures.")
+        """Returns a dict of texture types to file paths for a given material prim."""
+        if not material_prim:
+            return {}
+        res = self.make_request("GET", "/stagecraft/material/textures", params={"material": material_prim})
+        if not res.get("success"):
+            return {}
+        try:
+            return res.get("data", {}).get("textures", {})
+        except Exception:
+            return {}
 
     def ingest_texture(self, pbr_type, texture_file_path, project_output_dir_abs):
         self._log_info(f"Ingesting {pbr_type}: {self.safe_basename(texture_file_path)}")
@@ -567,27 +564,17 @@ class RemixAPIClient:
         return False, result.get("error", "Save failed.")
 
     def update_textures_batch(self, textures_to_update):
-        if not textures_to_update: return True, "No textures."
-        
-        payload_list = []
-        path_errors = []
-        for usd_attr, ingested_path in textures_to_update:
-            if not ingested_path or not os.path.isabs(ingested_path):
-                path_errors.append(f"Path not absolute: {usd_attr}")
-                continue
-            payload_list.append([usd_attr.replace('\\', '/'), ingested_path.replace(os.sep, '/')])
-            
-        if not payload_list: return False, "No valid paths."
-        
-        payload = {"force": True, "textures": payload_list}
-        result = self.make_request('PUT', '/stagecraft/textures/', json_payload=payload)
-        
-        if not result["success"]:
-            return False, result.get("error", "Batch update failed.")
-        
-        if path_errors:
-            return True, f"Success with warnings: {path_errors}"
-        return True, None
+        """
+        Updates multiple textures at once via the bulk patch endpoint.
+        textures_to_update: list of dicts: [{"material_prim": ..., "texture_type": ..., "texture_path": ...}, ...]
+        """
+        if not textures_to_update:
+            return True, "No textures to update"
+        payload = {"updates": textures_to_update}
+        res = self.make_request("PATCH", "/stagecraft/material/textures/bulk", json_payload=payload)
+        if res.get("success"):
+            return True, None
+        return False, res.get("error", "Batch update failed")
 
     def ping(self, timeout=2.0):
         """
