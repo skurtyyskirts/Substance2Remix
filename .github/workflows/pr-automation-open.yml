@@ -1,0 +1,16 @@
+name: PR Automation - Open PR on Push
+
+on:
+  push:
+    branches-ignore: [main]
+    tags-ignore: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  call:
+    uses: skurtyyskirts/TombRaiderLegendRTX-/.github/workflows/_auto-open-pr.yml@main
+    secrets: inherit

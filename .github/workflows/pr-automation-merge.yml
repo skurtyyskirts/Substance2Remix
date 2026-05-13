@@ -1,0 +1,21 @@
+name: PR Automation - Merge
+
+on:
+  pull_request_target:
+    types: [labeled, synchronize, opened, reopened]
+  check_suite:
+    types: [completed]
+  schedule:
+    - cron: '*/30 * * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: read
+  checks: read
+  issues: write
+
+jobs:
+  call:
+    uses: skurtyyskirts/TombRaiderLegendRTX-/.github/workflows/_automerge.yml@main
+    secrets: inherit

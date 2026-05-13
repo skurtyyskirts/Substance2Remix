@@ -1,0 +1,14 @@
+name: Issue Triage
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  call:
+    uses: skurtyyskirts/TombRaiderLegendRTX-/.github/workflows/_claude-issue-triage.yml@main
+    secrets: inherit

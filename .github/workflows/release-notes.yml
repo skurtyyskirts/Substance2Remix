@@ -1,0 +1,13 @@
+name: Release Notes on Tag
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  call:
+    uses: skurtyyskirts/TombRaiderLegendRTX-/.github/workflows/_claude-release-notes.yml@main
+    secrets: inherit

@@ -1,0 +1,11 @@
+name: Handoff Staleness Watchdog
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+jobs:
+  call:
+    uses: skurtyyskirts/TombRaiderLegendRTX-/.github/workflows/_staleness-watchdog.yml@main
+    secrets: inherit

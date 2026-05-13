@@ -1,0 +1,16 @@
+name: PR Risk Score
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  call:
+    if: github.event.pull_request.draft == false
+    uses: skurtyyskirts/TombRaiderLegendRTX-/.github/workflows/_claude-pr-risk.yml@main
+    secrets: inherit

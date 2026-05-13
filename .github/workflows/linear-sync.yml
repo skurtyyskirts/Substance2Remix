@@ -1,0 +1,14 @@
+name: Linear Sync
+
+on:
+  issues:
+    types: [opened, edited, closed, reopened]
+  pull_request:
+    types: [opened, edited, closed, reopened, converted_to_draft, ready_for_review]
+
+jobs:
+  call:
+    uses: skurtyyskirts/TombRaiderLegendRTX-/.github/workflows/_linear-sync.yml@main
+    secrets: inherit
+    with:
+      link_back: true

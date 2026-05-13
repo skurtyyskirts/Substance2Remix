@@ -1,0 +1,19 @@
+name: Idea Generation
+
+on:
+  schedule:
+    - cron: '0 9 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  call:
+    uses: skurtyyskirts/TombRaiderLegendRTX-/.github/workflows/_idea-generation.yml@main
+    secrets: inherit
+    with:
+      whiteboard_file: HANDOFF.md
+      claude_model: claude-sonnet-4-6
+      max_tokens: 2048
