@@ -460,13 +460,19 @@ class RemixAPIClient:
         
         output_paths = []
         data = res.get("data", {})
-        if "completed_schemas" in data:
-            for schema in data["completed_schemas"]:
-                 plugin_results = [schema.get("context_plugin", {})] + schema.get("check_plugins", [])
-                 for pr in plugin_results:
-                     for flow in pr.get("data", {}).get("data_flows", []):
-                         if flow.get("channel") == "ingestion_output":
-                             output_paths.extend(flow.get("output_data", []))
+        schemas = data.get("completed_schemas")
+        if schemas:
+            for schema in schemas:
+                cp = schema.get("context_plugin")
+                if cp and "data" in cp and "data_flows" in cp["data"]:
+                    for flow in cp["data"]["data_flows"]:
+                        if flow.get("channel") == "ingestion_output" and "output_data" in flow:
+                            output_paths.extend(flow["output_data"])
+                for pr in schema.get("check_plugins", ()):
+                    if "data" in pr and "data_flows" in pr["data"]:
+                        for flow in pr["data"]["data_flows"]:
+                            if flow.get("channel") == "ingestion_output" and "output_data" in flow:
+                                output_paths.extend(flow["output_data"])
         
         if not output_paths and "content" in data:
              output_paths.extend(data["content"])
