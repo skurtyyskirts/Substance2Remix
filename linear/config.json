@@ -1,0 +1,25 @@
+{
+  "teamId": "ccbdbc66-5c96-4204-a8f2-3826b72ec882",
+  "teamName": "RTX Remix Game Ports",
+  "projectId": "67707609-735f-4c4a-a3b6-fe5e68dcc680",
+  "projectName": "Substance2RemixRTX",
+  "labelIds": {
+    "push": "bf0bbd04-8264-4ba1-a0df-507d8aaac391",
+    "pull": "dd0508dc-9324-44c3-b73a-b5b9dfedce50",
+    "auth": "45869aad-d644-4290-bb79-c3103d2cec84",
+    "textures": "a12af43a-3c73-4e7a-8e6d-39ab68b485c3",
+    "blender-unwrap": "7904286f-18a7-4dae-ada2-59215b85d559",
+    "api-compat": "78396b6b-a185-4c29-aca7-ae48fceb1b2c",
+    "upstream": "55f3dc35-7bb4-41cb-a5aa-6395f086bddc",
+    "auto-idea": "92fededb-1622-41e1-bba8-ab126606637e"
+  },
+  "workflowStates": {
+    "Done": "fbc8f75d-8e6b-4811-af21-3750e7af6a21",
+    "In Progress": "ea606800-0c8b-4319-a2a7-fd379c5ac4e9",
+    "Canceled": "e829640b-05d3-4fd5-9625-4bf2e7c79068",
+    "Backlog": "d326f03d-ec05-4f34-b076-e29ad48bbb84",
+    "Duplicate": "8a3c45e1-5f2a-4302-af8e-fcac1bbe299c",
+    "In Review": "4786975b-e5f2-4b15-b724-d65fb7443fd2",
+    "Todo": "39524654-0cba-4da8-9060-b95704385c23"
+  }
+}
