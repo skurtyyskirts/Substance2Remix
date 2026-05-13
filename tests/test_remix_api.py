@@ -127,7 +127,7 @@ class TestRetryLogic(unittest.TestCase):
 
         sess.request.side_effect = side_effect
         with patch.object(client, "_get_session", return_value=sess):
-            with patch("time.sleep"):
+            with patch.object(client._shutdown_event, "wait", return_value=False):
                 result = client.make_request("GET", "/test", retries=3)
         self.assertEqual(call_count[0], 3)
         self.assertFalse(result["success"])
@@ -162,7 +162,7 @@ class TestRetryLogic(unittest.TestCase):
 
         sess.request.side_effect = side_effect
         with patch.object(client, "_get_session", return_value=sess):
-            with patch("time.sleep"):
+            with patch.object(client._shutdown_event, "wait", return_value=False):
                 result = client.make_request("GET", "/test", retries=3)
         self.assertGreater(call_count[0], 1, "429 should trigger retries")
 

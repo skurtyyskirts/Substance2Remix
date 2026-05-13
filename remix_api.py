@@ -75,6 +75,7 @@ class RemixAPIClient:
         self.logger = logger
         self._session = None
         self._session_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
 
     def _get_session(self):
         """
@@ -102,6 +103,7 @@ class RemixAPIClient:
     def close(self):
         """Release the underlying HTTP connection pool."""
         with self._session_lock:
+            self._shutdown_event.set()
             if self._session is not None:
                 try:
                     self._session.close()
@@ -227,7 +229,9 @@ class RemixAPIClient:
             if attempt < retries:
                 # Exponential backoff with cap.
                 sleep_s = min(float(delay) * (2 ** (attempt - 1)), 30.0)
-                time.sleep(sleep_s)
+                if self._shutdown_event.wait(sleep_s):
+                    return {"success": False, "status_code": 0, "data": None, "error": "Request cancelled due to client shutdown."}
+
 
         return {"success": False, "status_code": 0, "data": None, "error": last_error_message}
 
