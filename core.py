@@ -14,8 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 _PIPELINE_MAX_WORKERS = min(4, (os.cpu_count() or 4))
 
 # Local imports
-from . import dependency_manager
-from .qt_utils import QObject, Signal, Slot, QThread, QRunnable, QThreadPool, QtWidgets, QtCore, QT_BINDING
+from .qt_utils import QObject, Slot, QThreadPool, QtWidgets, QtCore, QT_BINDING
 from .plugin_info import PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_REPO_URL, PLUGIN_DESCRIPTION
 from .remix_api import RemixAPIClient, REMIX_ATTR_SUFFIX_TO_PBR_MAP, PBR_TO_REMIX_INGEST_VALIDATION_TYPE_MAP
 from .texture_processor import TextureProcessor
