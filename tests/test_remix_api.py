@@ -402,3 +402,52 @@ class TestIngestTextureFailFast(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("not found", err.lower())
         mock_make_request.assert_not_called()
+
+class TestSaveLayer(unittest.TestCase):
+    def test_missing_layer_id(self):
+        client = _make_client()
+        result, err = client.save_layer("")
+        self.assertFalse(result)
+        self.assertEqual(err, "Layer ID missing.")
+
+        result, err = client.save_layer(None)
+        self.assertFalse(result)
+        self.assertEqual(err, "Layer ID missing.")
+
+    @patch.object(RemixAPIClient, "get_current_edit_target")
+    def test_verify_layer_fails(self, mock_get_target):
+        client = _make_client()
+        mock_get_target.return_value = (None, "Target error")
+
+        result, err = client.save_layer("C:/dummy/layer.usda")
+        self.assertFalse(result)
+        self.assertEqual(err, "Could not verify layer: Target error")
+
+    @patch.object(RemixAPIClient, "make_request")
+    @patch.object(RemixAPIClient, "get_current_edit_target")
+    def test_save_fails(self, mock_get_target, mock_make_request):
+        client = _make_client()
+        mock_get_target.return_value = ("C:/dummy/layer.usda", None)
+        mock_make_request.return_value = {"success": False, "error": "Disk full"}
+
+        result, err = client.save_layer("C:/dummy/layer.usda")
+        self.assertFalse(result)
+        self.assertEqual(err, "Disk full")
+
+        # Test default error message
+        mock_make_request.return_value = {"success": False}
+        result, err = client.save_layer("C:/dummy/layer.usda")
+        self.assertFalse(result)
+        self.assertEqual(err, "Save failed.")
+
+    @patch.object(RemixAPIClient, "make_request")
+    @patch.object(RemixAPIClient, "get_current_edit_target")
+    def test_save_success(self, mock_get_target, mock_make_request):
+        client = _make_client()
+        mock_get_target.return_value = ("C:/dummy/layer.usda", None)
+        mock_make_request.return_value = {"success": True}
+
+        result, err = client.save_layer("C:/dummy/layer.usda")
+        self.assertTrue(result)
+        self.assertIsNone(err)
+        mock_make_request.assert_called_once_with('POST', '/stagecraft/layers/C:/dummy/layer.usda/save')
