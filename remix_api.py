@@ -167,7 +167,11 @@ class RemixAPIClient:
         # local-loopback HTTP (Remix's typical configuration). Hostname is
         # parsed via urlparse to avoid substring spoofing (localhost.evil.com).
         if verify_ssl is None:
-            verify_ssl = not _is_local_host(current_api_base)
+            # Enforce verify=True if url_endpoint is an absolute URL
+            if urllib.parse.urlparse(url_endpoint).netloc:
+                verify_ssl = True
+            else:
+                verify_ssl = not _is_local_host(current_api_base)
 
         base_headers = {'Accept': 'application/lightspeed.remix.service+json; version=1.0'}
         if json_payload is not None and 'Content-Type' not in (headers or {}):
