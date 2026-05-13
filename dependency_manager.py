@@ -65,8 +65,8 @@ def ensure_dependencies_installed():
 
     # Verify imports
     try:
-        import requests
-        import PIL
+        import requests  # noqa: F401
+        import PIL  # noqa: F401
         _log_info("Dependencies 'requests' and 'PIL' imported successfully.")
         return True
     except ImportError as e:
