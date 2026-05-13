@@ -68,6 +68,23 @@ class TextureProcessor:
             stem = os.path.splitext(stem)[0]
         return stem
 
+
+    @staticmethod
+    def _run_subprocess(command, timeout_seconds):
+        startupinfo, creationflags = None, 0
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            creationflags = subprocess.CREATE_NO_WINDOW
+
+        return subprocess.run(
+            command, capture_output=True, text=True, check=False,
+            startupinfo=startupinfo, creationflags=creationflags,
+            encoding='utf-8', errors='ignore',
+            timeout=timeout_seconds,
+        )
+
     def convert_dds_to_png(self, texconv_exe, dds_file, output_png_target_name_base, output_dir_override=None):
         if not texconv_exe or not os.path.isfile(texconv_exe): 
             raise RuntimeError(f"texconv.exe path is not configured or invalid: {texconv_exe}")
@@ -86,42 +103,26 @@ class TextureProcessor:
         self._log_info(f"  Running texconv: {' '.join(command)}")
         
         try:
-            startupinfo, creationflags = None, 0
-            if sys.platform == "win32":
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-                creationflags = subprocess.CREATE_NO_WINDOW
-            
-            try:
-                result = subprocess.run(
-                    command, capture_output=True, text=True, check=False,
-                    startupinfo=startupinfo, creationflags=creationflags,
-                    encoding='utf-8', errors='ignore',
-                    timeout=TEXCONV_TIMEOUT_SECONDS,
-                )
-            except subprocess.TimeoutExpired:
-                raise RuntimeError(f"texconv timed out after {TEXCONV_TIMEOUT_SECONDS}s on {self.safe_basename(dds_file)}")
+            result = self._run_subprocess(command, TEXCONV_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"texconv timed out after {TEXCONV_TIMEOUT_SECONDS}s on {self.safe_basename(dds_file)}")
 
-            if result.returncode != 0:
-                stdout = (result.stdout or "").strip()
-                stderr = (result.stderr or "").strip()
-                err_msg = (
-                    f"texconv failed (Code {result.returncode}). "
-                    f"Stdout: {stdout} "
-                    f"Stderr: {stderr}"
-                )
-                self._log_error(err_msg)
-                raise RuntimeError(err_msg)
+        if result.returncode != 0:
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            err_msg = (
+                f"texconv failed (Code {result.returncode}). "
+                f"Stdout: {stdout} "
+                f"Stderr: {stderr}"
+            )
+            self._log_error(err_msg)
+            raise RuntimeError(err_msg)
 
-            if not os.path.exists(expected_output_path):
-                raise RuntimeError(f"texconv reported success but output missing: {expected_output_path}")
+        if not os.path.exists(expected_output_path):
+            raise RuntimeError(f"texconv reported success but output missing: {expected_output_path}")
 
-            return expected_output_path
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError(f"Error running texconv: {e}")
+        return expected_output_path
+
 
     def _get_blender_unwrap_script_path(self):
         settings = self.settings_getter()
@@ -166,42 +167,26 @@ class TextureProcessor:
         self._log_info(f"  Executing Blender: {' '.join(command)}")
 
         try:
-            startupinfo, creationflags = None, 0
-            if sys.platform == "win32":
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-                creationflags = subprocess.CREATE_NO_WINDOW
-            
-            try:
-                result = subprocess.run(
-                    command, capture_output=True, text=True, check=False,
-                    startupinfo=startupinfo, creationflags=creationflags,
-                    encoding='utf-8', errors='ignore',
-                    timeout=BLENDER_TIMEOUT_SECONDS,
-                )
-            except subprocess.TimeoutExpired:
-                self._log_error(f"Blender unwrap timed out after {BLENDER_TIMEOUT_SECONDS}s.")
-                self._display_message("Error: Blender auto-unwrap timed out.")
-                return None
+            result = self._run_subprocess(command, BLENDER_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            self._log_error(f"Blender unwrap timed out after {BLENDER_TIMEOUT_SECONDS}s.")
+            self._display_message("Error: Blender auto-unwrap timed out.")
+            return None
 
-            stderr_text = result.stderr or ""
-            if result.returncode != 0 or "Error: Python script fail" in stderr_text:
-                self._log_error(f"Blender failed (Code {result.returncode}). Stderr: {stderr_text}")
-                detail = self._truncate(stderr_text) or f"exit code {result.returncode}"
-                self._display_message(f"Blender auto-unwrap failed: {detail}")
-                return None
-            
-            if os.path.exists(output_mesh_path):
-                self._log_info(f"Blender unwrap success: {output_mesh_path}")
-                return output_mesh_path
-            
-            self._log_error("Blender finished but output missing.")
+        stderr_text = result.stderr or ""
+        if result.returncode != 0 or "Error: Python script fail" in stderr_text:
+            self._log_error(f"Blender failed (Code {result.returncode}). Stderr: {stderr_text}")
+            detail = self._truncate(stderr_text) or f"exit code {result.returncode}"
+            self._display_message(f"Blender auto-unwrap failed: {detail}")
             return None
-        except Exception as e:
-            self._log_error(f"Blender execution exception: {e}", exc_info=True)
-            self._display_message(f"Error: Blender exception: {e}")
-            return None
+            
+        if os.path.exists(output_mesh_path):
+            self._log_info(f"Blender unwrap success: {output_mesh_path}")
+            return output_mesh_path
+            
+        self._log_error("Blender finished but output missing.")
+        return None
+
 
     def _force_push_root_conflicts(self, root, ingest_dir_abs):
         if not root or not ingest_dir_abs or not os.path.isdir(ingest_dir_abs): return False
