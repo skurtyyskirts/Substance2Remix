@@ -1,0 +1,58 @@
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - "docs/**/*"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**/*"
+
+python:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.py"
+          - "**/requirements*.txt"
+          - "**/pyproject.toml"
+          - "**/setup.cfg"
+          - "**/setup.py"
+
+cpp:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.cpp"
+          - "**/*.cc"
+          - "**/*.cxx"
+          - "**/*.hpp"
+          - "**/*.hh"
+
+c:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.c"
+          - "**/*.h"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/test_*.py"
+          - "**/tests/**/*"
+          - "**/*_test.py"
+
+config:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.toml"
+          - "**/*.yml"
+          - "**/*.yaml"
+          - "**/*.ini"
+          - "**/*.conf"
+
+shaders:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.hlsl"
+          - "**/*.glsl"
+          - "**/*.shader"
+          - "**/shaders/**/*"
