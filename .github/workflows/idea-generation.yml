@@ -35,15 +35,15 @@ jobs:
 
           context = f"""# Project: Substance2Remix
 
-## CLAUDE.md
-{claude_md[:3000]}
+          ## CLAUDE.md
+          {claude_md[:3000]}
 
-## WHITEBOARD (current hypotheses and blockers)
-{whiteboard[:2000]}
+          ## WHITEBOARD (current hypotheses and blockers)
+          {whiteboard[:2000]}
 
-## Last 20 CHANGELOG entries
-{changelog_context}
-"""
+          ## Last 20 CHANGELOG entries
+          {changelog_context}
+          """
           Path("/tmp/context.txt").write_text(context, encoding="utf-8")
           print("Context built.")
           EOF
@@ -61,16 +61,16 @@ jobs:
 
           prompt = f"""{context}
 
----
+          ---
 
-Given the current project state above, identify the 3–5 most promising **unexplored or under-explored** approaches that could resolve the active blocker or advance the project.
+          Given the current project state above, identify the 3-5 most promising **unexplored or under-explored** approaches that could resolve the active blocker or advance the project.
 
-For each idea:
-1. State the hypothesis clearly (1–2 sentences)
-2. Explain why it's likely to help given the current evidence
-3. Describe the concrete first step to test it
+          For each idea:
+          1. State the hypothesis clearly (1-2 sentences)
+          2. Explain why it's likely to help given the current evidence
+          3. Describe the concrete first step to test it
 
-Format as a numbered list. Be specific to Substance2Remix's codebase and blockers — avoid generic suggestions."""
+          Format as a numbered list. Be specific to Substance2Remix's codebase and blockers - avoid generic suggestions."""
 
           payload = {
               "model": "claude-sonnet-4-5",
@@ -143,6 +143,7 @@ Format as a numbered list. Be specific to Substance2Remix's codebase and blocker
       - name: Append ideas to CHANGELOG.md and open PR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE=$(date +%Y-%m-%d)
           BRANCH="bot/ideas-${DATE}"
@@ -153,7 +154,7 @@ Format as a numbered list. Be specific to Substance2Remix's codebase and blocker
           IDEAS=$(cat /tmp/ideas.txt)
           cat >> CHANGELOG.md << MARKDOWN
 
-          ## Auto-Generated Ideas — ${DATE}
+          ## Auto-Generated Ideas - ${DATE}
 
           ${IDEAS}
           MARKDOWN
