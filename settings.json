@@ -1,0 +1,23 @@
+{
+  "settings_version": 1,
+  "api_base_url": "http://localhost:8011",
+  "poll_timeout": 60.0,
+  "log_level": "debug",
+  "use_simple_tiling_mesh_on_pull": false,
+  "simple_tiling_mesh_path": "assets/meshes/plane_tiling.usd",
+  "painter_import_template_path": "",
+  "auto_unwrap_with_blender_on_pull": false,
+  "blender_executable_path": "",
+  "blender_unwrap_script_path": "",
+  "blender_unwrap_output_suffix": "_spUnwrapped",
+  "blender_smart_uv_angle_limit": 66.0,
+  "blender_smart_uv_area_weight": 0.0,
+  "blender_smart_uv_island_margin": 0.003,
+  "blender_smart_uv_stretch_to_bounds": true,
+  "painter_export_path": "C:\\Users\\skurtyy\\AppData\\Local\\Temp\\RemixConnector_Export",
+  "export_file_format": "png",
+  "include_opacity_map": false,
+  "remix_output_subfolder": "Textures/PainterConnector_Ingested",
+  "texconv_path": "",
+  "plugin_id": "Substance2Remix"
+}
