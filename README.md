@@ -1,33 +1,23 @@
-# Substance Painter to RTX Remix Connector
+# RTX Remix Substance Painter Connector
 
-This plugin creates a bridge between Adobe Substance 3D Painter and NVIDIA's RTX Remix, allowing artists to seamlessly send and receive textures and meshes between the two applications.
+This plugin creates a bridge between Substance Painter and NVIDIA's RTX Remix, allowing artists to easily send and receive textures between the two applications.
 
 ## Features
 
-- **Pull from Remix**: Create a new Substance Painter project using the selected mesh from RTX Remix. The project is automatically linked for future push/pull operations.
 - **Push to Remix**: Export textures from Substance Painter and automatically ingest them into the selected Remix material.
-- **Force Push to Remix**: Push textures to a *different* selected material in Remix, allowing you to reuse your Substance Painter work on multiple assets.
+- **Pull from Remix**: Create a new Substance Painter project using the selected mesh from Remix, and automatically link it for future push/pull operations.
 - **Import Textures from Remix**: Pull textures from a linked material in Remix into the current Substance Painter project.
-- **Auto-unwrap with Blender**: Optionally use Blender to automatically UV unwrap meshes pulled from Remix, streamlining the texturing process.
-- **Progress UI**: Long-running operations show a progress/status dialog driven by worker status/progress signals.
-- **Diagnostics & Logs**: Built-in Diagnostics panel and a plugin log file (`logs/remix_connector.log`) to help troubleshoot connection/path issues.
-- **Settings Panel**: Professional tabbed settings UI with browse buttons and a one-click connection test.
-
-## Requirements
-
-- Adobe Substance 3D Painter
-- NVIDIA RTX Remix
-- Blender (optional, for auto-unwrap feature)
-- `texconv.exe` (a copy is included with this plugin)
+- **Auto-Unwrap with Blender**: Optionally use Blender to automatically unwrap meshes pulled from Remix.
+- **Settings Panel**: Configure plugin settings, including paths to Blender and the 	exconv.exe utility.
 
 ## Installation
 
-1.  Download the latest release from the [GitHub releases page](https://github.com/skurtyyskirts/Substance2Remix/releases).
-2.  Locate your Substance Painter plugins directory. This is typically found at: `Documents\Adobe\Adobe Substance 3D Painter\python\plugins`.
-3.  Copy the `Substance2Remix` folder into the `plugins` directory.
-4.  Launch Substance Painter. The plugin will be available under the **Window > RTX Remix Connector** menu.
+1.  Download the latest release from https://github.com/skurtyyskirts/Substance2Remix.
+2.  Locate your Substance Painter plugins directory. This is typically found in Documents\Adobe\Adobe Substance 3D Painter\python\plugins.
+3.  Copy the Substance2Painter folder into the plugins directory.
+4.  Launch Substance Painter. The plugin will be available under the Plugins > RTX Remix Connector menu.
 
-## How to Use
+## Usage
 
 ### Connecting to Remix
 
@@ -36,49 +26,21 @@ Before using the push/pull features, ensure that RTX Remix is running and that a
 ### Pulling a Mesh from Remix
 
 1.  In RTX Remix, select the mesh you want to texture.
-2.  In Substance Painter, go to **Window > RTX Remix Connector > Pull from Remix**.
-3.  A new Substance Painter project will be created with the selected mesh. If the **Auto-Unwrap with Blender** option is enabled in the settings, the mesh will be unwrapped before the project is created.
-
-### Importing Existing Textures
-
-After pulling a mesh, you can import its existing textures from Remix:
-
-1.  Go to **Window > RTX Remix Connector > Import Textures from Remix**.
-2.  The plugin will find the textures associated with the linked material in Remix and import them into your current Substance Painter project.
+2.  In Substance Painter, go to Plugins > RTX Remix Connector > Pull from Remix.
+3.  A new Substance Painter project will be created with the selected mesh.
 
 ### Pushing Textures to Remix
 
-1.  After texturing your mesh in Substance Painter, go to **Window > RTX Remix Connector > Push to Remix**.
-2.  The plugin will export your textures and update the material in Remix.
-
-### Force Pushing to a Different Material
-
-If you want to apply your textures to a different material in Remix:
-
-1.  In RTX Remix, select the new target material.
-2.  In Substance Painter, go to **Window > RTX Remix Connector > Force Push to Remix**.
-3.  The plugin will export the textures and apply them to the newly selected material.
+1.  After texturing your mesh in Substance Painter, go to Plugins > RTX Remix Connector > Push to Remix.
+2.  The plugin will export the textures and update the material in Remix.
 
 ### Settings
 
-The Settings panel (**Window > RTX Remix Connector > Settings...**) allows you to configure the following:
+The Settings panel (Plugins > RTX Remix Connector > Settings) allows you to configure the following:
 
--   **API Base URL / Timeout**: Connection settings for the RTX Remix REST API (includes a **Test Connection** button).
--   **Blender Executable Path**: The path to your `blender.exe` file (optional; required only for auto-unwrap).
--   **Texconv Path**: The path to the `texconv.exe` utility (used to convert `.dds` pulled from Remix into a Painter-friendly format). A copy is included with this plugin and should be detected automatically.
--   **Export Options**: Choose export format and optionally export/push a dedicated **Opacity** texture.
+-   **Blender Executable Path**: The path to your lender.exe file. This is required for the auto-unwrap feature.
+-   **Texconv Path**: The path to the 	exconv.exe utility. This is used to convert .dds files from Remix into a format that Substance Painter can use. A copy is included with this plugin.
 -   **Log Level**: The verbosity of the plugin's logs.
-
-## Changelog
-
-### v0.5.0 - Major Refactor & Async Support
-- **Modular Codebase**: Refactored monolithic `core.py` into specialized modules (`painter_controller`, `remix_api`, `texture_processor`, etc.) for better maintainability.
-- **Async Operations**: Long-running tasks (import/export) now run in background threads with a progress bar, preventing Painter from freezing.
-- **Improved Dependency Management**: Dependencies (`requests`, `PIL`, etc.) are now vendored or better managed to ensure stability.
-- **Force Push (Relink)**: Added ability to relink a project to a new Remix material hash and force push textures.
-- **Diagnostics**: Added `diagnostics_dialog.py` for better troubleshooting.
-- **Settings**: Persistent settings via `settings.json` (auto-generated) and improved Settings dialog.
-- **Fixes**: Numerous bug fixes in texture import/export and path handling.
 
 ## Contributing
 
