@@ -176,6 +176,22 @@ class RemixAPIClient:
 
         self._log_debug(f"API Request: {method.upper()} {full_url}")
 
+        return self._execute_request(
+            method=method,
+            full_url=full_url,
+            effective_headers=effective_headers,
+            json_payload=json_payload,
+            params=params,
+            effective_timeout=effective_timeout,
+            verify_ssl=verify_ssl,
+            retries=retries,
+            delay=delay
+        )
+
+    def _execute_request(self, method, full_url, effective_headers, json_payload, params, effective_timeout, verify_ssl, retries, delay):
+        """
+        Executes the prepared request with retry logic.
+        """
         last_error_message = "Request failed after multiple retries."
         session = self._get_session()
 
