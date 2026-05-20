@@ -143,6 +143,7 @@ Format as a numbered list. Be specific to Substance2Remix's codebase and blocker
       - name: Append ideas to CHANGELOG.md and open PR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE=$(date +%Y-%m-%d)
           BRANCH="bot/ideas-${DATE}"

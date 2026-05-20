@@ -27,6 +27,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install dependencies
+        run: pip install requests
+
       - name: Sync to Linear
         env:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
