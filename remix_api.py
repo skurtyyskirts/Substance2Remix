@@ -315,7 +315,7 @@ class RemixAPIClient:
                     for f in files:
                         if isinstance(f, str):
                             if os.path.isabs(f): abs_context = f.replace('\\', '/')
-                            elif any(f.lower().endswith(ext) for ext in ['.usd', '.usda', '.usdc', '.obj', '.fbx', '.gltf', '.glb']):
+                            elif f.lower().endswith(('.usd', '.usda', '.usdc', '.obj', '.fbx', '.gltf', '.glb')):
                                 rel_mesh = f.replace('\\', '/')
                     
                     if abs_context and rel_mesh: break
