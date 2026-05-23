@@ -65,8 +65,8 @@ def ensure_dependencies_installed():
 
     # Verify imports
     try:
-        import requests
-        import PIL
+        __import__("requests")
+        __import__("PIL")
         _log_info("Dependencies 'requests' and 'PIL' imported successfully.")
         return True
     except ImportError as e:
