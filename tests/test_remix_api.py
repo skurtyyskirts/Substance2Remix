@@ -402,3 +402,43 @@ class TestIngestTextureFailFast(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("not found", err.lower())
         mock_make_request.assert_not_called()
+
+class TestIngestTextureOptimization(unittest.TestCase):
+    @patch.object(RemixAPIClient, "make_request")
+    @patch("os.path.isfile", return_value=True)
+    @patch("os.makedirs", return_value=None)
+    def test_ingest_texture_optimization_same_behavior(self, mock_makedirs, mock_isfile, mock_make_request):
+        # We want to test that given a payload with nested structures, the optimized ingest logic works exactly
+        client = _make_client()
+        mock_make_request.return_value = {
+            "success": True,
+            "data": {
+                "completed_schemas": [
+                    {
+                        "context_plugin": {
+                            "data": {
+                                "data_flows": [
+                                    {"channel": "ingestion_output", "output_data": ["/output/file1.a.rtex.dds"]},
+                                    {"channel": "other", "output_data": ["/other/file.dds"]}
+                                ]
+                            }
+                        },
+                        "check_plugins": [
+                            {
+                                "data": {
+                                    "data_flows": [
+                                        {"channel": "ingestion_output", "output_data": ["/output/file2.a.rtex.dds"]},
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+        result, err = client.ingest_texture("albedo", "/input/file1.png", "/output/dir")
+        self.assertIsNotNone(result)
+        self.assertIsNone(err)
+        # Should prefer expected suffix "a" matching file1
+        self.assertTrue(result.endswith("file1.a.rtex.dds"))
