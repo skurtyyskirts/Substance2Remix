@@ -20,3 +20,9 @@ settings.json
 dist/
 build/
 
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.pytest_cache/
