@@ -66,8 +66,7 @@ def ensure_dependencies_installed():
     # Verify imports
     try:
         import requests
-        import PIL
-        _log_info("Dependencies 'requests' and 'PIL' imported successfully.")
+        _log_info("Dependency 'requests' imported successfully.")
         return True
     except ImportError as e:
         _log_warning(f"Failed to import dependencies even after adding vendor path: {e}")
