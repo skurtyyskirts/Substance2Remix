@@ -1,0 +1,31 @@
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - "docs/**/*"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**/*"
+
+python:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.py"
+          - "**/requirements*.txt"
+          - "**/pyproject.toml"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/test_*.py"
+          - "**/tests/**/*"
+
+config:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.toml"
+          - "**/*.yml"
+          - "**/*.yaml"
+          - "**/*.ini"
