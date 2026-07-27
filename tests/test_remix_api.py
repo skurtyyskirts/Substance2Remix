@@ -86,6 +86,21 @@ class TestTLSPolicy(unittest.TestCase):
         # Hostname comparison is case-insensitive
         self.assertFalse(self._capture_verify("http://LOCALHOST:8011"))
 
+    def test_absolute_url_endpoint_uses_verify_true(self):
+        # Enforce verify=True if the url_endpoint is an absolute URL, to prevent bypasses
+        client = _make_client("http://localhost:8011")
+        sess = _mock_session()
+        sess.request.return_value = _mock_response()
+
+        with patch.object(client, "_get_session", return_value=sess):
+            client.make_request("GET", "https://evil.com/test", retries=1)
+            _, kwargs = sess.request.call_args
+            self.assertTrue(kwargs.get("verify"))
+
+            client.make_request("GET", "//evil.com", retries=1)
+            _, kwargs = sess.request.call_args
+            self.assertTrue(kwargs.get("verify"))
+
 
 class TestBaseUrlValidation(unittest.TestCase):
     """make_request must reject URLs that aren't http/https or lack a host."""
