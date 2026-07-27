@@ -13,7 +13,8 @@ logs/
 Pulled Textures/
 assets/gotoingest/
 settings.json
-.vscode/
+.vscode/*
+!.vscode/mcp.json
 .idea/
 *.log
 *.spec
