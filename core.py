@@ -117,6 +117,57 @@ class RemixConnectorPlugin(QObject):
         except Exception:
             return None
 
+    def _setup_progress_dialog(self, worker, title):
+        progress_dialog = None
+        try:
+            progress_dialog = QtWidgets.QProgressDialog("Working...", "Hide", 0, 0, self._get_ui_parent())
+            progress_dialog.setWindowTitle(title or PLUGIN_NAME)
+            progress_dialog.setWindowModality(QtCore.Qt.WindowModal)
+            progress_dialog.setMinimumDuration(0)
+            progress_dialog.setAutoClose(True)
+            progress_dialog.setAutoReset(True)
+            progress_dialog.setValue(0)
+            # Hide-only: we do not propagate cancel into the worker.
+            try:
+                progress_dialog.canceled.connect(progress_dialog.hide)
+            except (AttributeError, TypeError):
+                pass
+            # Free the QObject deterministically when the dialog closes.
+            try:
+                progress_dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
+            except (AttributeError, TypeError):
+                pass
+
+            progress_dialog.show()
+            with self._workers_lock:
+                self._active_progress_dialogs[worker] = progress_dialog
+
+            # Connect signals directly to QObject methods so Qt routes
+            # them via QueuedConnection across threads.
+            try:
+                worker.signals.status.connect(
+                    progress_dialog.setLabelText, QtCore.Qt.QueuedConnection
+                )
+            except (AttributeError, TypeError):
+                pass
+
+            # progress: switch to determinate range on first update,
+            # then forward the value. Bind through a small helper that
+            # lives on the GUI thread. Parent it to the dialog so it
+            # is destroyed automatically when the dialog goes away.
+            helper = _ProgressBridge(progress_dialog, parent=progress_dialog)
+            try:
+                worker.signals.progress.connect(
+                    helper.on_progress, QtCore.Qt.QueuedConnection
+                )
+            except (AttributeError, TypeError):
+                pass
+        except Exception as e:
+            self.log_debug(f"Progress dialog setup failed (non-fatal): {e}")
+            progress_dialog = None
+        return progress_dialog
+
+
     def _start_worker(self, worker, on_result=None, title=None, show_progress=True):
         """
         Starts a Worker and keeps a strong reference until it finishes.
@@ -133,52 +184,7 @@ class RemixConnectorPlugin(QObject):
 
         progress_dialog = None
         if show_progress and QtWidgets and QtCore:
-            try:
-                progress_dialog = QtWidgets.QProgressDialog("Working...", "Hide", 0, 0, self._get_ui_parent())
-                progress_dialog.setWindowTitle(title or PLUGIN_NAME)
-                progress_dialog.setWindowModality(QtCore.Qt.WindowModal)
-                progress_dialog.setMinimumDuration(0)
-                progress_dialog.setAutoClose(True)
-                progress_dialog.setAutoReset(True)
-                progress_dialog.setValue(0)
-                # Hide-only: we do not propagate cancel into the worker.
-                try:
-                    progress_dialog.canceled.connect(progress_dialog.hide)
-                except (AttributeError, TypeError):
-                    pass
-                # Free the QObject deterministically when the dialog closes.
-                try:
-                    progress_dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
-                except (AttributeError, TypeError):
-                    pass
-
-                progress_dialog.show()
-                with self._workers_lock:
-                    self._active_progress_dialogs[worker] = progress_dialog
-
-                # Connect signals directly to QObject methods so Qt routes
-                # them via QueuedConnection across threads.
-                try:
-                    worker.signals.status.connect(
-                        progress_dialog.setLabelText, QtCore.Qt.QueuedConnection
-                    )
-                except (AttributeError, TypeError):
-                    pass
-
-                # progress: switch to determinate range on first update,
-                # then forward the value. Bind through a small helper that
-                # lives on the GUI thread. Parent it to the dialog so it
-                # is destroyed automatically when the dialog goes away.
-                helper = _ProgressBridge(progress_dialog, parent=progress_dialog)
-                try:
-                    worker.signals.progress.connect(
-                        helper.on_progress, QtCore.Qt.QueuedConnection
-                    )
-                except (AttributeError, TypeError):
-                    pass
-            except Exception as e:
-                self.log_debug(f"Progress dialog setup failed (non-fatal): {e}")
-                progress_dialog = None
+            progress_dialog = self._setup_progress_dialog(worker, title)
 
         # Cleanup must run on the GUI thread so it can touch QWidgets.
         try:
