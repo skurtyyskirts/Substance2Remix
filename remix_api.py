@@ -75,6 +75,7 @@ class RemixAPIClient:
         self.logger = logger
         self._session = None
         self._session_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
 
     def _get_session(self):
         """
@@ -108,6 +109,8 @@ class RemixAPIClient:
                 except Exception:
                     pass
                 self._session = None
+            if hasattr(self, "_shutdown_event"):
+                self._shutdown_event.set()
 
     def _log_debug(self, msg):
         if hasattr(self.logger, 'debug'): self.logger.debug(msg)
@@ -243,7 +246,12 @@ class RemixAPIClient:
             if attempt < retries:
                 # Exponential backoff with cap.
                 sleep_s = min(float(delay) * (2 ** (attempt - 1)), 30.0)
-                time.sleep(sleep_s)
+                # Use event.wait instead of time.sleep to allow cancellation during shutdown
+                if hasattr(self, "_shutdown_event") and self._shutdown_event.wait(sleep_s):
+                    self._log_warning("Request aborted during backoff due to client shutdown.")
+                    break
+                elif not hasattr(self, "_shutdown_event"):
+                    time.sleep(sleep_s)
 
         return {"success": False, "status_code": 0, "data": None, "error": last_error_message}
 
