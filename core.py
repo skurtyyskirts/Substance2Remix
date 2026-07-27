@@ -25,16 +25,38 @@ from .settings_dialog import create_settings_dialog_instance
 from .settings_schema import sanitize_settings, atomic_write_json
 from .diagnostics_dialog import DiagnosticsDialog
 
-# --- Logging Setup ---
+# --- Substance Painter API Setup ---
 try:
     import substance_painter.logging as sp_logging
+    import substance_painter.project
+    import substance_painter.ui
+    import substance_painter.textureset
+    import substance_painter.resource
+    import substance_painter.export
+    PAINTER_AVAILABLE = True
 except ImportError:
+    PAINTER_AVAILABLE = False
     class MockLogger:
         def info(self, m): print(f"[INFO] {m}")
         def warning(self, m): print(f"[WARN] {m}")
         def error(self, m, exc_info=False): print(f"[ERROR] {m}")
         def debug(self, m): print(f"[DEBUG] {m}")
     sp_logging = MockLogger()
+
+    class MockPainterModule:
+        def __getattr__(self, name): return self
+        def __call__(self, *args, **kwargs): return None
+        def __bool__(self): return False
+
+    class MockSubstancePainter:
+        project = MockPainterModule()
+        ui = MockPainterModule()
+        textureset = MockPainterModule()
+        resource = MockPainterModule()
+        export = MockPainterModule()
+        logging = sp_logging
+
+    substance_painter = MockSubstancePainter()
 
 DEFAULT_REMIX_API_BASE_URL = "http://localhost:8011"
 SETTINGS_FILE_NAME = "settings.json"
@@ -112,7 +134,6 @@ class RemixConnectorPlugin(QObject):
     # --- Worker lifecycle (prevents GC / improves reliability when app is unfocused) ---
     def _get_ui_parent(self):
         try:
-            import substance_painter.ui
             return substance_painter.ui.get_main_window()
         except Exception:
             return None
@@ -333,9 +354,7 @@ class RemixConnectorPlugin(QObject):
         """
         Ensures channels exist so MapExporter can generate maps like Emissive/Opacity even if the template lacks them.
         """
-        try:
-            import substance_painter.textureset
-        except Exception:
+        if not PAINTER_AVAILABLE:
             return
 
         required = ["baseColor", "normal", "roughness", "metallic", "height", "emissive", "opacity"]
@@ -403,7 +422,6 @@ class RemixConnectorPlugin(QObject):
             self.log_info(f"[shutdown] {msg}")
             return
         try:
-            import substance_painter.ui
             substance_painter.ui.display_message(str(msg))
         except Exception:
             self.log_info(f"UI Message: {msg}")
@@ -494,8 +512,6 @@ class RemixConnectorPlugin(QObject):
 
     def _pull_step2c_create_project(self, mesh_path, material_prim):
         try:
-            import substance_painter.project
-
             # Close any existing project (do this late, after unwrap, to avoid leaving user without a project).
             if self.painter_controller.is_project_open():
                 self.painter_controller.close_project()
@@ -507,7 +523,6 @@ class RemixConnectorPlugin(QObject):
                 self.log_debug(f"Using configured import template: {template_path}")
             else:
                 try:
-                    import substance_painter.resource
                     templates = substance_painter.resource.search("PBR - Metallic Roughness Alpha-blend")
                     for t in templates:
                         url = t.identifier().url()
@@ -641,8 +656,6 @@ class RemixConnectorPlugin(QObject):
 
     def _pull_step4_assign(self, processed_textures):
         self.log_info(f"Pull Step 3 Complete. Assigning {len(processed_textures)} textures...")
-        import substance_painter.resource
-        import substance_painter.textureset
         
         ts_list = substance_painter.textureset.all_texture_sets()
         if not ts_list: return
@@ -687,8 +700,6 @@ class RemixConnectorPlugin(QObject):
     # --- Import Textures ---
     def handle_import_textures(self):
         try:
-            import substance_painter.project
-
             if not substance_painter.project.is_open():
                 self.display_message("No project open.")
                 return
@@ -725,7 +736,6 @@ class RemixConnectorPlugin(QObject):
 
     def _relink_step2_push(self, result):
         material_prim, material_hash = result
-        import substance_painter.project
         if not substance_painter.project.is_open(): return
         
         meta = substance_painter.project.Metadata("RTXRemixConnectorLink")
@@ -737,8 +747,6 @@ class RemixConnectorPlugin(QObject):
 
     def _start_push(self, force_new_root=False):
         try:
-            import substance_painter.project
-
             if not substance_painter.project.is_open():
                 self.display_message("No project open.")
                 return
@@ -787,8 +795,6 @@ class RemixConnectorPlugin(QObject):
         )
 
     def _export_textures_worker(self, export_path, material_hash):
-        import substance_painter.export
-        import substance_painter.textureset
 
         all_ts = substance_painter.textureset.all_texture_sets()
         if not all_ts: raise Exception("No texture sets")
@@ -948,7 +954,6 @@ class RemixConnectorPlugin(QObject):
     def handle_settings(self):
         parent = None
         try:
-            import substance_painter.ui
             parent = substance_painter.ui.get_main_window()
         except Exception:
             pass
@@ -1030,7 +1035,6 @@ class RemixConnectorPlugin(QObject):
 
         # Project link info (if available)
         try:
-            import substance_painter.project
             if substance_painter.project.is_open():
                 meta = substance_painter.project.Metadata("RTXRemixConnectorLink")
                 lines.append("Active project link:")
