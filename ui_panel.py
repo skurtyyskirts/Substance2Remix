@@ -10,7 +10,6 @@ PANEL_OBJECT_NAME = "Substance2RemixPanel"
 POLL_INTERVAL_MS = 5000
 
 _STATUS_COLORS = {True: "#5cb85c", False: "#d9534f", None: "#8a8a8a"}
-_NO_PRESET = "(no preset)"
 
 
 def plugin_icon():
@@ -82,15 +81,6 @@ class RemixPanel(QtWidgets.QWidget):
         link_layout.setColumnStretch(0, 1)
         root.addWidget(link_box)
 
-        # Preset row: switching applies (and saves) the preset immediately.
-        preset_row = QtWidgets.QHBoxLayout()
-        preset_row.addWidget(QtWidgets.QLabel("Preset"))
-        self._preset_combo = QtWidgets.QComboBox()
-        self._preset_combo.setToolTip("Settings preset. Create and edit presets in Settings.")
-        self._preset_combo.activated.connect(self._on_preset_chosen)
-        preset_row.addWidget(self._preset_combo, 1)
-        root.addLayout(preset_row)
-
         # Actions
         self._pull_btn = self._action_button(
             "Pull from Remix", handlers.handle_pull_from_remix,
@@ -150,41 +140,6 @@ class RemixPanel(QtWidgets.QWidget):
         if self.isVisible() and not self._plugin.current_operation:
             self._plugin.refresh_connection()
 
-    def _on_preset_chosen(self, index):
-        name = self._preset_combo.itemData(index) or ""
-        if name == self._plugin.active_preset():
-            return
-        if not name:
-            self._plugin.update_settings({"active_preset": ""})
-            return
-        active = self._plugin.active_preset()
-        if self._plugin.preset_modified():
-            question = f"Your settings have changes that aren't saved in '{active}'. Load '{name}' anyway?"
-        elif not active:
-            question = f"Load preset '{name}'? It replaces your current workflow settings."
-        else:
-            question = None
-        Box = QtWidgets.QMessageBox
-        if question and Box.question(self, PLUGIN_NAME, question, Box.Yes | Box.No, Box.No) != Box.Yes:
-            self.refresh()
-            return
-        try:
-            self._plugin.apply_preset(name)
-        except Exception as e:
-            self._plugin.show_error("Preset", str(e))
-
-    def _refresh_presets(self):
-        active = self._plugin.active_preset()
-        modified = self._plugin.preset_modified()
-        self._preset_combo.blockSignals(True)
-        self._preset_combo.clear()
-        self._preset_combo.addItem(_NO_PRESET, "")
-        for name in self._plugin.preset_names():
-            self._preset_combo.addItem(f"{name} (modified)" if name == active and modified else name, name)
-        idx = self._preset_combo.findData(active)
-        self._preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self._preset_combo.blockSignals(False)
-
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         self._poll()
@@ -225,13 +180,11 @@ class RemixPanel(QtWidgets.QWidget):
             self._normals_label.setToolTip(tooltip)
         else:
             self._normals_label.setText("")
-        self._refresh_presets()
 
         busy = self._plugin.current_operation
         # Painter has no notification API: the last result lives here.
         self._op_label.setText(f"Running: {busy}..." if busy else self._plugin.last_message)
         self._pull_btn.setEnabled(not busy)
-        self._preset_combo.setEnabled(not busy)
         for btn in (self._import_btn, self._push_btn, self._show_btn):
             btn.setEnabled(not busy and bool(link))
         for btn in (self._force_btn, self._link_btn, self._channels_btn):

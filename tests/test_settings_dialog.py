@@ -37,24 +37,6 @@ class _Controller:
     def reset_settings(self):
         return self.store.reset_to_defaults()
 
-    def preset_names(self):
-        return self.store.preset_names()
-
-    def active_preset(self):
-        return self.store.active_preset
-
-    def preset_modified(self):
-        return self.store.is_modified()
-
-    def save_preset(self, name):
-        return self.store.save_preset(name)
-
-    def apply_preset(self, name):
-        return self.store.apply_preset(name)
-
-    def delete_preset(self, name):
-        return self.store.delete_preset(name)
-
 
 class TestSettingsDialog(unittest.TestCase):
     def setUp(self):
@@ -96,46 +78,23 @@ class TestSettingsDialog(unittest.TestCase):
     def test_every_remix_map_has_a_toggle(self):
         self.assertEqual(set(self.dialog.map_checks), set(settings_dialog.MAPS_BY_KEY) | {"opacity"})
 
-    def test_save_as_then_switch_presets(self):
-        with patch.object(QtWidgets.QInputDialog, "getText", return_value=("DirectX props", True)):
-            self.dialog.normal_format.setCurrentIndex(self.dialog.normal_format.findData("directx"))
-            self.dialog._save_preset_as()
-        self.assertEqual(self.dialog.preset_combo.currentData(), "DirectX props")
-        self.assertFalse(self.dialog.preset_save_btn.isEnabled())  # nothing modified yet
-
-        self.dialog.normal_format.setCurrentIndex(self.dialog.normal_format.findData("opengl"))
+    def test_preview_shader_checkbox_is_saved(self):
+        self.assertTrue(self.dialog.preview_shader.isChecked())  # on by default
+        self.dialog.preview_shader.setChecked(False)
         self.dialog._commit()
-        self.assertTrue(self.dialog.preset_save_btn.isEnabled())
-        self.assertEqual(self.dialog.preset_state.text(), "Unsaved changes")
+        self.assertFalse(self.controller.store.settings["use_remix_preview_shader"])
 
-        with patch.object(QtWidgets.QInputDialog, "getText", return_value=("OpenGL", True)):
-            self.dialog._save_preset_as()
-        idx = self.dialog.preset_combo.findData("DirectX props")
-        self.dialog.preset_combo.setCurrentIndex(idx)
-        self.dialog._on_preset_chosen(idx)
-        self.assertEqual(self.dialog.normal_format.currentData(), "directx")
-        self.assertEqual(self.controller.store.settings["normal_map_format"], "directx")
+    def test_dialog_has_no_presets(self):
+        self.assertFalse(hasattr(self.dialog, "preset_combo"))
 
-    def test_switching_away_from_modified_preset_asks_first(self):
-        self.controller.save_preset("A")
+    def test_restore_defaults_asks_first(self):
         self.controller.update_settings({"normal_map_format": "directx"})
-        self.controller.save_preset("B")
-        self.controller.apply_preset("A")
-        self.controller.update_settings({"project_texture_resolution": 4096})  # modify A
-        self.dialog._refresh_presets()
-        idx = self.dialog.preset_combo.findData("B")
         with patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.No):
-            self.dialog._on_preset_chosen(idx)
-        self.assertEqual(self.controller.active_preset(), "A")
-        self.assertEqual(self.controller.store.settings["project_texture_resolution"], 4096)
-
-    def test_restore_defaults_asks_and_keeps_presets(self):
-        self.controller.update_settings({"normal_map_format": "directx"})
-        self.controller.save_preset("Keep me")
+            self.dialog._reset_defaults()
+        self.assertEqual(self.controller.store.settings["normal_map_format"], "directx")
         with patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.Yes):
             self.dialog._reset_defaults()
         self.assertEqual(self.controller.store.settings["normal_map_format"], "opengl")
-        self.assertEqual(self.controller.preset_names(), ["Keep me"])
         self.assertEqual(self.dialog.normal_format.currentData(), "opengl")
 
 

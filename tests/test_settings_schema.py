@@ -176,14 +176,11 @@ class TestSettingsSchema(unittest.TestCase):
         self.assertEqual(sanitize_settings({"poll_timeout": 0}, "dummy_dir")["poll_timeout"], 0.5)
         self.assertEqual(sanitize_settings({"poll_timeout": "9999"}, "dummy_dir")["poll_timeout"], 300.0)
 
-    def test_preset_values_exclude_machine_paths(self):
-        settings = sanitize_settings({"api_base_url": "http://x:1", "normal_map_format": "directx"}, "dummy_dir")
-        values = settings_schema.preset_values(settings)
-        self.assertEqual(values["normal_map_format"], "directx")
-        for key in ("api_base_url", "texconv_path", "blender_executable_path", "painter_export_path", "log_level"):
-            self.assertNotIn(key, values)
-        values["texture_maps"]["albedo"] = False  # a copy, not the live settings
-        self.assertTrue(settings["texture_maps"]["albedo"])
+    def test_retired_preset_key_and_preview_shader_default(self):
+        sanitized = sanitize_settings({"active_preset": "Old", "use_remix_preview_shader": "false"}, "dummy_dir")
+        self.assertNotIn("active_preset", sanitized)  # 1.0.0 presets are gone
+        self.assertFalse(sanitized["use_remix_preview_shader"])
+        self.assertTrue(sanitize_settings({}, "dummy_dir")["use_remix_preview_shader"])
 
     def test_user_config_dir_is_outside_the_plugin(self):
         with patch.dict(os.environ, {"APPDATA": r"C:\Users\me\AppData\Roaming"}):

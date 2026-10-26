@@ -9,7 +9,7 @@ from .pbr_maps import TOGGLE_KEYS
 from .plugin_info import PLUGIN_ID
 
 DEFAULT_REMIX_API_BASE_URL = "http://localhost:8011"
-SETTINGS_VERSION = 3
+SETTINGS_VERSION = 4
 
 TEXTURE_RESOLUTIONS = (512, 1024, 2048, 4096)
 NORMAL_MAP_FORMATS = ("opengl", "directx")
@@ -20,32 +20,14 @@ POLL_TIMEOUT_RANGE = (0.5, 300.0)
 _RETIRED_KEYS = (
     # AperturePBR has no opacity texture input; opacity rides in the albedo alpha.
     "include_opacity_map",
-)
-
-# Workflow settings a preset stores. Machine-specific values (Remix address,
-# tool and export paths, log level) stay out so presets can be shared.
-PRESET_KEYS = (
-    "use_simple_tiling_mesh_on_pull",
-    "simple_tiling_mesh_path",
-    "painter_import_template_path",
-    "auto_import_textures_on_pull",
-    "project_texture_resolution",
-    "normal_map_format",
-    "auto_unwrap_with_blender_on_pull",
-    "blender_smart_uv_angle_limit",
-    "blender_smart_uv_area_weight",
-    "blender_smart_uv_island_margin",
-    "blender_smart_uv_stretch_to_bounds",
-    "export_file_format",
-    "restore_original_aspect_ratio_on_export",
-    "remix_output_subfolder",
-    "texture_maps",
+    # 1.0.0 had named presets; settings now simply autosave.
+    "active_preset",
 )
 
 
 def user_config_dir() -> str:
-    """Where settings and presets live: outside the plugin folder, so
-    reinstalling or updating the plugin keeps them."""
+    """Where settings live: outside the plugin folder, so reinstalling or
+    updating the plugin keeps them."""
     base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
     return os.path.join(base, PLUGIN_ID)
 
@@ -120,10 +102,9 @@ def default_settings(plugin_dir: str) -> Dict[str, Any]:
         "remix_output_subfolder": "Textures/PainterConnector_Ingested",
         # --- Texture maps (push + import) ---
         "texture_maps": {key: True for key in TOGGLE_KEYS},
+        "use_remix_preview_shader": True,
         # --- Tools ---
         "texconv_path": _detect_texconv_path(plugin_dir),
-        # --- Presets ---
-        "active_preset": "",
         # --- Internal / reserved ---
         "plugin_id": PLUGIN_ID,
     }
@@ -218,7 +199,7 @@ def sanitize_settings(settings: Dict[str, Any], plugin_dir: str) -> Dict[str, An
 
     merged["remix_output_subfolder"] = _coerce_str(merged.get("remix_output_subfolder"), "Textures/PainterConnector_Ingested").strip() or "Textures/PainterConnector_Ingested"
     merged["texture_maps"] = sanitize_texture_maps(merged.get("texture_maps"))
-    merged["active_preset"] = _coerce_str(merged.get("active_preset"), "").strip()
+    merged["use_remix_preview_shader"] = _coerce_bool(merged.get("use_remix_preview_shader"), True)
 
     # texconv: if empty/invalid, try local copy
     texconv = _coerce_str(merged.get("texconv_path"), "").strip()
@@ -242,14 +223,6 @@ def sanitize_texture_maps(value: Any) -> Dict[str, bool]:
 def enabled_maps(settings: Dict[str, Any]) -> set:
     """Map keys switched on in Settings > Texture Maps."""
     return {k for k, on in sanitize_texture_maps((settings or {}).get("texture_maps")).items() if on}
-
-
-def preset_values(settings: Dict[str, Any]) -> Dict[str, Any]:
-    """The part of ``settings`` a preset stores (deep-copied where needed)."""
-    values = {k: settings[k] for k in PRESET_KEYS if k in settings}
-    if isinstance(values.get("texture_maps"), dict):
-        values["texture_maps"] = dict(values["texture_maps"])
-    return values
 
 
 def atomic_write_json(path: str, data: Dict[str, Any]) -> Tuple[bool, str]:

@@ -3,6 +3,38 @@
 All notable changes to Substance2Remix. Versions follow [Semantic Versioning](https://semver.org/); the
 running version is `PLUGIN_VERSION` in `plugin_info.py`.
 
+## [1.1.0] - 2026-10-26
+
+### Added
+
+- **RTX Remix preview shader** (`assets/shaders/rtx-remix-preview.glsl`). Painter's standard
+  "PBR - Metal Rough with alpha blending" shader ignores Remix's anisotropy and subsurface maps, so
+  painting them showed nothing. The new shader renders the standard maps exactly like that shader and
+  also shows anisotropy (along the mesh tangent, as in Remix) and an approximation of Remix's subsurface
+  look from the transmittance, thickness and single-scattering maps. It has its own controls in Shader
+  Settings: subsurface preview strength, default thickness, and the thickness User channel.
+- Pull, Import (when the material has anisotropy or subsurface maps) and **Add Remix Channels** switch
+  the project to the preview shader. **Use RTX Remix Preview Shader** in the menu switches any project.
+  A checkbox in **Settings > Texture Maps** turns the automatic switch off. The shader is imported into
+  the project, so the `.spp` doesn't depend on the plugin.
+
+### Removed
+
+- **Presets.** Settings simply save as you change them and load again on the next start. The preset bar
+  in Settings and the preset switcher in the dock panel are gone, and `presets.json` is no longer used.
+
+### Fixed
+
+- Pull no longer lists informational notes, such as "uses the tiling plane", under "Skipped". The note
+  also points to the right tab: **Settings > Project**.
+- The Settings dialog's "Saved" message no longer outlives the dialog.
+
+### Verified
+
+- In Painter 12.2: the preview shader compiles and is applied, and Painter exports all ten Remix maps,
+  including anisotropy, transmittance, thickness and single scattering, under the channel names the
+  plugin resolves at runtime.
+
 ## [1.0.0] - 2026-10-26
 
 Tested with Substance 3D Painter 12.2 and the RTX Remix Toolkit 1.6.1. This release also includes the
@@ -122,6 +154,7 @@ unreleased 0.5.1 work (expanded test suite, lifecycle cleanup, parallel texture 
 
 - Changing settings no longer creates a folder in the plugins folder; file cleanup and renames.
 
+[1.1.0]: https://github.com/skurtyyskirts/Substance2Remix/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/skurtyyskirts/Substance2Remix/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/skurtyyskirts/Substance2Remix/releases/tag/v0.5.0
 [0.4]: https://github.com/skurtyyskirts/Substance2Remix/releases/tag/0.4a

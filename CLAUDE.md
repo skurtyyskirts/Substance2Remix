@@ -10,16 +10,17 @@ Painter ignores because it has no `__init__.py`.
 | File | Purpose |
 |------|-------|
 | `__init__.py` | Painter entry points (`start_plugin`/`close_plugin`); menu, dock panel, submodule reload on "Reload plugin" |
-| `core.py` | `RemixConnectorPlugin`: operations (pull, import, push, force push, link, show, add channels), settings/preset API, worker plumbing, diagnostics |
+| `core.py` | `RemixConnectorPlugin`: operations (pull, import, push, force push, link, show, add channels, preview shader), settings API, worker plumbing, diagnostics |
 | `pbr_maps.py` | **The one table of texture maps**: Remix input, ingest type, suffix, Painter channel names/format, export name, DDS encoding. Everything else derives from it |
 | `remix_api.py` | `RemixAPIClient` REST client for the RTX Remix Toolkit + path helpers |
 | `painter_controller.py` | Painter API wrapper: channels (incl. labelled User channels), resolution, fill layers (main thread only) |
 | `texture_processor.py` | texconv DDS→PNG, Remix normal decode (Pillow), anisotropy remap, resize, Blender unwrap launcher |
-| `ui_panel.py` | Dock panel (connection, link, normals, preset switcher, actions) + plugin icon |
+| `ui_panel.py` | Dock panel (connection, link, normals, actions) + plugin icon |
 | `async_utils.py` | `QRunnable` worker + signals |
 | `settings_schema.py` | Settings defaults, sanitizing/migration, `PRESET_KEYS`, `user_config_dir()` |
-| `settings_store.py` | `SettingsStore`: autosaved `settings.json` + `presets.json` in `%APPDATA%\Substance2Remix\`, legacy migration |
-| `settings_dialog.py` | Autosaving settings dialog with preset bar and Texture Maps tab |
+| `settings_store.py` | `SettingsStore`: autosaved `settings.json` in `%APPDATA%\Substance2Remix\`, legacy migration, `.bak` for unreadable files |
+| `settings_dialog.py` | Autosaving settings dialog (no OK/Cancel, no presets) with a Texture Maps tab |
+| `assets/shaders/rtx-remix-preview.glsl` | Painter viewport shader previewing every Remix map (see "Preview shader") |
 | `diagnostics_dialog.py` | Diagnostics text dialog |
 | `dependency_manager.py` | Puts `_vendor/` (requests, Pillow) on `sys.path` |
 | `blender_auto_unwrap.py` | Runs inside Blender (`--background`); Smart UV Project |
@@ -98,6 +99,24 @@ and 5xx retry. Do NOT add direct `requests` calls outside `make_request()`.
   the Remix project.
 - `_vendor/PIL` ships both cp311 (Painter 10/11) and cp313 (Painter 12) binaries.
 
+## Preview shader
+
+- Painter's default "PBR - Metal Rough with alpha blending" shader reads only basecolor, metallic,
+  roughness, specularlevel, opacity (+ normal/height/emissive/AO via libs). It ignores every Remix
+  extra map. `rtx-remix-preview.glsl` is that shader plus anisotropy (`channel_anisotropylevel`,
+  angle 0 = tangent, like Remix) and a subsurface approximation from `channel_absorptioncolor`
+  (TransmissionColor), `channel_scatteringcolor` (SubsurfaceColor) and `channel_user0..3`
+  (thickness; `remixThicknessChannel` picks the slot). Without those channels it is pixel-identical.
+- Painter's Python API has no shader functions; `PainterController.use_remix_shader` imports the
+  .glsl as a project resource (`resource.import_project_resource(..., Usage.SHADER)`) and calls the
+  JS API through `substance_painter.js.evaluate`: `alg.shaders.instances()`,
+  `alg.shaders.updateShaderInstance(id, url)`, `alg.shaders.setParameters(id, {...})`.
+  `js.evaluate` returns parsed JSON.
+- Verified in Painter 12.2 (startup-script harness: a module in
+  `Documents/.../python/startup/` runs at launch; delete it afterwards): "Creation of the shader
+  rtx-remix-preview successful", parameters live, and all ten Remix maps export with the runtime
+  documentMap names (`specularroughnessanisotropy`, `transmissioncolor`, `user0`, `subsurfacecolor`).
+
 ## Painter channels
 
 - Painter 12 names channels after OpenPBR and keeps legacy aliases; `pbr_maps.PbrMap.channels`
@@ -106,6 +125,7 @@ and 5xx retry. Do NOT add direct `requests` calls outside `make_request()`.
   "Remix Thickness" (found by label, created in the first free `User0..31` slot).
 - Export `documentMap` names: the six standard maps use fixed names (`baseColor`, `roughness`, …);
   the others use `channel.type().name.lower()` (as Painter's own export tests do), e.g. `user0`.
+  Verified exporting in Painter 12.2.
 
 ## Running Tests
 

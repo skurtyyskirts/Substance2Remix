@@ -36,6 +36,7 @@ _MENU = (
     ("Link to Selected Remix Material", "handle_link_to_selection", "Link this project to the material selected in Remix."),
     ("Show Linked Material in Remix", "handle_select_in_remix", "Select the linked material in RTX Remix."),
     ("Add Remix Channels to Texture Set", "handle_add_channels", "Add the channels for every Remix map switched on in Settings (anisotropy, subsurface, ...)."),
+    ("Use RTX Remix Preview Shader", "handle_use_remix_shader", "Switch the viewport to a shader that shows every Remix map, including anisotropy and subsurface."),
     None,
     ("Settings...", "handle_settings", None),
     ("Diagnostics...", "handle_diagnostics", None),

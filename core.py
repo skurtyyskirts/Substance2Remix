@@ -596,7 +596,7 @@ class RemixConnectorPlugin(QObject):
         except Exception:
             pass
 
-    # --- Settings and presets (autosaved through self.store) ---
+    # --- Settings (autosaved through self.store) ---
     def _log_store_errors(self):
         for err in self.store.errors:
             self.log_error(err)
@@ -628,30 +628,6 @@ class RemixConnectorPlugin(QObject):
 
     def reset_settings(self):
         return self._settings_replaced(self.store.reset_to_defaults())
-
-    def preset_names(self):
-        return self.store.preset_names()
-
-    def active_preset(self):
-        return self.store.active_preset
-
-    def preset_modified(self):
-        return self.store.is_modified()
-
-    def save_preset(self, name):
-        settings = self._settings_replaced(self.store.save_preset(name))
-        self.log_info(f"Saved settings preset '{name}'.")
-        return settings
-
-    def apply_preset(self, name):
-        settings = self._settings_replaced(self.store.apply_preset(name))
-        self.log_info(f"Loaded settings preset '{name}'.")
-        return settings
-
-    def delete_preset(self, name):
-        settings = self._settings_replaced(self.store.delete_preset(name))
-        self.log_info(f"Deleted settings preset '{name}'.")
-        return settings
 
     def _texconv_path(self):
         texconv = self.settings.get("texconv_path")
@@ -878,7 +854,7 @@ class RemixConnectorPlugin(QObject):
     def _pull_pick_mesh(self, result, material_prim):
         """The mesh to build the project from, plus a note for the user."""
         if self.settings.get("use_simple_tiling_mesh_on_pull", False):
-            return self._tiling_mesh_path(), "Using the tiling plane (Settings > Pull)."
+            return self._tiling_mesh_path(), "It uses the tiling plane (Settings > Project)."
         files = result["mesh_files"]
         if not files:
             return self._tiling_mesh_path(), "No mesh file was found for the selection, so the tiling plane was used."
@@ -991,11 +967,7 @@ class RemixConnectorPlugin(QObject):
                          "so pushed textures only line up after you replace that mesh in Remix.")
         material_name = material_prim.rsplit("/", 1)[-1]
 
-        if not self.settings.get("auto_import_textures_on_pull", True):
-            notes.insert(0, f"Project created and linked to {material_name}.")
-            return self._finish_operation(" ".join(notes))
-
-        # Painter computes for a moment after creating a project; layer edits must wait.
+        # Painter computes for a moment after creating a project; shader and layer edits must wait.
         self._awaiting_project = True
 
         def _continue():
@@ -1003,6 +975,11 @@ class RemixConnectorPlugin(QObject):
                 return
             self._awaiting_project = False
             try:
+                if self.settings.get("use_remix_preview_shader", True):
+                    self._apply_remix_shader()
+                if not self.settings.get("auto_import_textures_on_pull", True):
+                    notes.insert(0, f"Project created and linked to {material_name}.")
+                    return self._finish_operation(" ".join(notes))
                 self._import_start(material_prim, adjust_resolution=True, notes=notes)
             except Exception as e:
                 self.log_error(f"Import after pull failed: {e}", exc_info=True)
@@ -1141,13 +1118,17 @@ class RemixConnectorPlugin(QObject):
         return {"material_prim": material_prim, "textures": processed, "source_size": source_size, "notes": notes}
 
     def _import_assign(self, result, adjust_resolution, notes):
-        notes = list(notes) + list(result.get("notes") or [])
+        """``notes`` are informational (from Pull); ``result["notes"]`` lists what was skipped."""
+        info = list(notes)
+        skipped = list(result.get("notes") or [])
         material_name = result["material_prim"].rsplit("/", 1)[-1]
         if not self.painter_controller.is_project_open():
             raise RemixError("The project was closed before the textures could be imported.")
         if not result["textures"]:
-            notes.insert(0, f"{material_name} has no textures to import.")
-            return self._finish_operation(" ".join(notes))
+            parts = [f"{material_name} has no textures to import."] + info
+            if skipped:
+                parts.append("Skipped: " + "; ".join(skipped))
+            return self._finish_operation(" ".join(parts))
 
         stack = self.painter_controller.active_stack()
         if stack is None:
@@ -1174,12 +1155,18 @@ class RemixConnectorPlugin(QObject):
         for err in errors:
             self.log_warning(f"Import: {err}")
         if not assigned:
-            raise RemixError("No textures could be applied: " + "; ".join(errors or notes or ["unknown error"]))
-        summary = f"Imported {len(assigned)} texture{'s' if len(assigned) != 1 else ''} from {material_name} into a new fill layer."
-        problems = notes + errors
+            raise RemixError("No textures could be applied: " + "; ".join(errors or skipped or ["unknown error"]))
+        if self.settings.get("use_remix_preview_shader", True) and any(is_extended(p) for p in assigned):
+            # Show the imported anisotropy/subsurface maps in the viewport.
+            shader_note = self._apply_remix_shader(stack)
+            if shader_note:
+                info.append(shader_note)
+        parts = [f"Imported {len(assigned)} texture{'s' if len(assigned) != 1 else ''} from {material_name} "
+                 "into a new fill layer."] + info
+        problems = skipped + errors
         if problems:
-            summary += " Skipped: " + "; ".join(problems)
-        self._finish_operation(summary)
+            parts.append("Skipped: " + "; ".join(problems))
+        self._finish_operation(" ".join(parts))
 
     # --- Link / relink ---
     def handle_link_to_selection(self):
@@ -1563,17 +1550,43 @@ class RemixConnectorPlugin(QObject):
         wanted = [k for k in (*MAP_KEYS, OPACITY) if k in maps and k not in present]
         if OPACITY in wanted and "albedo" not in maps:
             wanted.remove(OPACITY)
-        if not wanted:
-            return self.display_message("The texture set already has a channel for every map switched on in "
-                                        "Settings > Texture Maps.", level="notice")
         added = [k for k in wanted if self.painter_controller.ensure_channel(stack, k)]
         failed = [k for k in wanted if k not in added]
         names = lambda keys: ", ".join(MAPS_BY_KEY[k].painter_label if k in MAPS_BY_KEY else "Opacity" for k in keys)
-        message = f"Added channels: {names(added)}." if added else "No channels were added."
+        if not wanted:
+            message = "The texture set already has a channel for every map switched on in Settings > Texture Maps."
+        else:
+            message = f"Added channels: {names(added)}." if added else "No channels were added."
         if failed:
             message += f" Couldn't add: {names(failed)} (see the log)."
+        if self.settings.get("use_remix_preview_shader", True):
+            shader_note = self._apply_remix_shader(stack)
+            if shader_note:
+                message += f" {shader_note}"
         self._emit_state()
         self.display_message(message, level="warning" if failed else "notice")
+
+    # --- Viewport shader ---
+    def _apply_remix_shader(self, stack=None):
+        """Use the RTX Remix preview shader so Painter's viewport shows every Remix
+        map. GUI thread only. Returns a note for the user, or "" when nothing
+        changed. Never raises: the viewport is a convenience, not part of the push."""
+        try:
+            stack = stack if stack is not None else self.painter_controller.active_stack()
+            switched = self.painter_controller.use_remix_shader(stack)
+        except Exception as e:
+            self.log_warning(f"Couldn't switch to the RTX Remix preview shader: {e}")
+            return "The RTX Remix preview shader couldn't be applied (see the log)."
+        if not switched:
+            return ""
+        self.log_info("Viewport shader set to the RTX Remix preview shader.")
+        return "The viewport now uses the RTX Remix preview shader, which shows every Remix map."
+
+    def handle_use_remix_shader(self):
+        if not self.painter_controller.is_project_open():
+            return self.display_message("Open a Painter project first.", level="notice")
+        note = self._apply_remix_shader()
+        self.display_message(note or "This project already uses the RTX Remix preview shader.", level="notice")
 
     # --- Settings / diagnostics / about ---
     def handle_settings(self):
@@ -1646,8 +1659,6 @@ class RemixConnectorPlugin(QObject):
         lines += [
             f"Plugin dir: {PLUGIN_DIR}",
             f"Settings file: {self.store.settings_path}",
-            f"Presets file: {self.store.presets_path} ({len(self.store.presets)} preset(s), "
-            f"active: {self.store.active_preset or 'none'}{', modified' if self.store.is_modified() else ''})",
             f"Log file: {self._log_file_path}",
             "",
             "RTX Remix:",
@@ -1676,6 +1687,7 @@ class RemixConnectorPlugin(QObject):
             "Key settings:",
             f"  normal_map_format (new projects): {s.get('normal_map_format')}",
             f"  texture maps on: {', '.join(k for k in (*MAP_KEYS, OPACITY) if k in enabled_maps(s))}",
+            f"  use_remix_preview_shader: {s.get('use_remix_preview_shader')}",
             f"  project_texture_resolution: {s.get('project_texture_resolution')}",
             f"  auto_import_textures_on_pull: {s.get('auto_import_textures_on_pull')}",
             f"  use_simple_tiling_mesh_on_pull: {s.get('use_simple_tiling_mesh_on_pull')}",
@@ -1707,6 +1719,11 @@ class RemixConnectorPlugin(QObject):
                 if stack is not None:
                     present = sorted(self.painter_controller.present_pbr_types(stack))
                     lines.append(f"  Active stack channels: {', '.join(present) or '(none)'}")
+                try:
+                    shaders = [i.get("shader") for i in self.painter_controller.shader_instances()]
+                    lines.append(f"  Viewport shader: {', '.join(s or '?' for s in shaders) or '(none)'}")
+                except Exception as e:
+                    lines.append(f"  Viewport shader: ? ({e})")
             else:
                 lines.append("Painter project: none open")
         except Exception as e:
@@ -1817,6 +1834,7 @@ def handle_relink_and_push_to_remix(): _safe_call('handle_relink_and_push_to_rem
 def handle_link_to_selection(): _safe_call('handle_link_to_selection')
 def handle_select_in_remix(): _safe_call('handle_select_in_remix')
 def handle_add_channels(): _safe_call('handle_add_channels')
+def handle_use_remix_shader(): _safe_call('handle_use_remix_shader')
 def handle_settings(): _safe_call('handle_settings')
 def handle_diagnostics(): _safe_call('handle_diagnostics')
 def handle_open_log_folder(): _safe_call('handle_open_log_folder')

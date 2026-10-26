@@ -175,6 +175,50 @@ class TestPainterController(unittest.TestCase):
         # Maps with a fixed name (albedo) or a virtual map (normal) aren't resolved.
         self.assertEqual(names, {"anisotropy": "specularroughnessanisotropy"})
 
+    def _js(self, instances):
+        calls = []
+
+        def evaluate(code):
+            calls.append(code)
+            return instances if code == "alg.shaders.instances()" else None
+
+        self.sp.js.evaluate.side_effect = evaluate
+        return calls
+
+    def test_use_remix_shader_switches_and_points_at_the_thickness_slot(self):
+        calls = self._js([{"id": 0, "shader": "pbr-metal-rough-with-alpha-blending"}])
+        self.sp.resource.import_project_resource.return_value.identifier.return_value.url.return_value = "resource://p/rtx"
+        stack = self._user_stack({0: "Wetness", 2: "Remix Thickness"})
+        self.assertEqual(self.controller.use_remix_shader(stack), 1)
+        path, usage = self.sp.resource.import_project_resource.call_args[0]
+        self.assertTrue(path.endswith("rtx-remix-preview.glsl"))
+        self.assertIs(usage, self.sp.resource.Usage.SHADER)
+        self.assertIn('alg.shaders.updateShaderInstance(0, "resource://p/rtx")', calls)
+        self.assertIn('alg.shaders.setParameters(0, {"remixThicknessChannel": 2})', calls)
+
+    def test_use_remix_shader_is_idempotent(self):
+        calls = self._js([{"id": 3, "shader": "rtx-remix-preview"}])
+        stack = self._user_stack({})
+        self.assertEqual(self.controller.use_remix_shader(stack), 0)
+        self.sp.resource.import_project_resource.assert_not_called()  # no duplicate resource
+        self.assertIn('alg.shaders.setParameters(3, {"remixThicknessChannel": -1})', calls)
+
+    def test_thickness_beyond_the_shader_slots_is_not_previewed(self):
+        calls = self._js([{"id": 0, "shader": "rtx-remix-preview"}])
+        stack = self._user_stack({5: "Remix Thickness"})
+        self.controller.use_remix_shader(stack)
+        self.assertIn('alg.shaders.setParameters(0, {"remixThicknessChannel": -1})', calls)
+        self.logger.warning.assert_called()
+
+    def test_preview_shader_reads_every_remix_channel(self):
+        with open(painter_controller.REMIX_SHADER_PATH, encoding="utf-8") as f:
+            source = f.read()
+        for needle in ("channel_basecolor", "channel_opacity", "channel_roughness", "channel_metallic",
+                       "channel_anisotropylevel", "channel_absorptioncolor", "channel_scatteringcolor",
+                       "channel_user0", "channel_user3", "uniform int remixThicknessChannel",
+                       "//: state blend over", "alphaOutput(", "emissiveColorOutput("):
+            self.assertIn(needle, source)
+
     def test_active_stack_falls_back_to_first_texture_set(self):
         self.sp.textureset.get_active_stack.side_effect = RuntimeError("no active stack")
         ts = MagicMock()

@@ -27,7 +27,7 @@ _BOUND = (
     "_author_material_group_wrapper", "_pull_pick_mesh", "_tiling_mesh_path", "_pull_fetch",
     "_push_ingest", "_restore_aspect_ratio", "_rename_for_force_push", "_require_remix_project",
     "_import_fetch", "_texconv_path", "_normal_map_format", "_push_options", "project_normal_format",
-    "_push_done", "handle_add_channels",
+    "_push_done", "handle_add_channels", "_import_assign", "_apply_remix_shader",
 )
 
 
@@ -439,6 +439,50 @@ class TestImportFetch(unittest.TestCase):
         plugin.texture_processor.anisotropy_from_remix.assert_called_once()
 
 
+class TestImportAssign(unittest.TestCase):
+    def _plugin(self, assigned, **settings):
+        plugin = _make_plugin(settings)
+        plugin.painter_controller = MagicMock()
+        plugin.painter_controller.create_fill_layer.return_value = (assigned, [])
+        plugin.painter_controller.use_remix_shader.return_value = 1
+        return plugin
+
+    def _result(self, textures, notes=()):
+        return {"material_prim": "/RootNode/Looks/mat_A", "textures": textures, "source_size": (0, 0),
+                "notes": list(notes)}
+
+    def test_pull_notes_are_information_not_skipped(self):
+        plugin = self._plugin(["albedo"])
+        plugin._import_assign(self._result([("albedo", "a.png")], ["normal: file not found (n.dds)"]), False,
+                              ["It uses the tiling plane (Settings > Project)."])
+        message = plugin._finish_operation.call_args[0][0]
+        self.assertIn("into a new fill layer. It uses the tiling plane (Settings > Project).", message)
+        self.assertIn("Skipped: normal: file not found (n.dds)", message)
+        self.assertNotIn("Skipped: It uses", message)
+
+    def test_extended_maps_switch_the_viewport_shader(self):
+        plugin = self._plugin(["albedo", "transmittance"])
+        plugin._import_assign(self._result([("albedo", "a.png"), ("transmittance", "t.png")]), False, [])
+        plugin.painter_controller.use_remix_shader.assert_called_once()
+        self.assertIn("RTX Remix preview shader", plugin._finish_operation.call_args[0][0])
+
+    def test_standard_maps_or_setting_off_leave_the_shader_alone(self):
+        plugin = self._plugin(["albedo"])
+        plugin._import_assign(self._result([("albedo", "a.png")]), False, [])
+        plugin.painter_controller.use_remix_shader.assert_not_called()
+        plugin = self._plugin(["anisotropy"], use_remix_preview_shader=False)
+        plugin._import_assign(self._result([("anisotropy", "an.png")]), False, [])
+        plugin.painter_controller.use_remix_shader.assert_not_called()
+
+    def test_shader_failure_never_fails_the_import(self):
+        plugin = self._plugin(["anisotropy"])
+        plugin.painter_controller.use_remix_shader.side_effect = RuntimeError("js error")
+        plugin._import_assign(self._result([("anisotropy", "an.png")]), False, [])
+        message = plugin._finish_operation.call_args[0][0]
+        self.assertIn("Imported 1 texture", message)
+        self.assertIn("couldn't be applied", message)
+
+
 class TestAddChannels(unittest.TestCase):
     def test_adds_only_missing_enabled_channels(self):
         plugin = _make_plugin({"texture_maps": {"anisotropy": False}})
@@ -450,6 +494,18 @@ class TestAddChannels(unittest.TestCase):
         added = [c[0][1] for c in plugin.painter_controller.ensure_channel.call_args_list]
         self.assertEqual(added, ["emissive", "transmittance", "thickness", "single_scattering", "opacity"])
         self.assertIn("Added channels", plugin.display_message.call_args[0][0])
+        # The new channels show in the viewport right away.
+        plugin.painter_controller.use_remix_shader.assert_called_once()
+
+    def test_existing_channels_still_get_the_preview_shader(self):
+        plugin = _make_plugin()
+        plugin._operation = None
+        plugin.painter_controller = MagicMock()
+        plugin.painter_controller.present_pbr_types.return_value = set(core.MAP_KEYS) | {"opacity"}
+        plugin.painter_controller.use_remix_shader.return_value = 1
+        plugin.handle_add_channels()
+        plugin.painter_controller.ensure_channel.assert_not_called()
+        self.assertIn("RTX Remix preview shader", plugin.display_message.call_args[0][0])
 
     def test_refuses_while_an_operation_runs(self):
         plugin = _make_plugin()

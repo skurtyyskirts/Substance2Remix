@@ -1,7 +1,7 @@
 """Tests for ui_panel.py with real PySide6 widgets (offscreen) and a fake plugin."""
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,17 +19,13 @@ _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 class _FakePlugin(QtCore.QObject):
     state_changed = QtCore.Signal()
 
-    def __init__(self, link=None, presets=(), active="", modified=False):
+    def __init__(self, link=None):
         super().__init__()
         self.link = link
-        self.presets = list(presets)
-        self.active = active
-        self.modified = modified
         self.current_operation = None
         self.last_message = ""
         self.painter_controller = MagicMock()
         self.painter_controller.is_project_open.return_value = True
-        self.applied = []
 
     def connection_state(self):
         return {"ok": True, "message": "Connected - Mod"}
@@ -42,22 +38,6 @@ class _FakePlugin(QtCore.QObject):
 
     def project_normal_format(self, link=None):
         return (link or {}).get("normal_format") or "opengl"
-
-    def preset_names(self):
-        return self.presets
-
-    def active_preset(self):
-        return self.active
-
-    def preset_modified(self):
-        return self.modified
-
-    def apply_preset(self, name):
-        self.applied.append(name)
-        self.active = name
-
-    def update_settings(self, values):
-        self.active = values.get("active_preset", self.active)
 
     def show_error(self, *args):
         pass
@@ -85,35 +65,15 @@ class TestRemixPanel(unittest.TestCase):
         panel.refresh()
         self.assertEqual(panel._normals_label.text(), "Normals: OpenGL (from Settings)")
 
-    def test_loading_a_preset_without_an_active_one_asks_first(self):
-        plugin = _FakePlugin(presets=["DX"])
-        panel = self._panel(plugin)
-        idx = panel._preset_combo.findData("DX")
-        with patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.No) as ask:
-            panel._on_preset_chosen(idx)
-        ask.assert_called_once()
-        self.assertEqual(plugin.applied, [])  # hand-tuned settings were not replaced
-        self.assertEqual(panel._preset_combo.currentData(), "")
-
-    def test_switching_between_clean_presets_needs_no_question(self):
-        plugin = _FakePlugin(presets=["DX", "GL"], active="GL")
-        panel = self._panel(plugin)
-        with patch.object(QtWidgets.QMessageBox, "question") as ask:
-            panel._on_preset_chosen(panel._preset_combo.findData("DX"))
-        ask.assert_not_called()
-        self.assertEqual(plugin.applied, ["DX"])
-
-    def test_modified_preset_is_marked(self):
-        plugin = _FakePlugin(presets=["GL"], active="GL", modified=True)
-        panel = self._panel(plugin)
-        self.assertEqual(panel._preset_combo.currentText(), "GL (modified)")
+    def test_panel_has_no_preset_switcher(self):
+        panel = self._panel(_FakePlugin())
+        self.assertFalse(hasattr(panel, "_preset_combo"))
 
     def test_actions_disabled_while_busy(self):
         plugin = _FakePlugin(link={"material_prim": "/RootNode/Looks/mat_A"})
         plugin.current_operation = "Push to Remix"
         panel = self._panel(plugin)
         self.assertFalse(panel._push_btn.isEnabled())
-        self.assertFalse(panel._preset_combo.isEnabled())
         self.assertIn("Running: Push to Remix", panel._op_label.text())
 
 

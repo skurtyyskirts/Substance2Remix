@@ -2,15 +2,19 @@
 
 A Substance 3D Painter plugin that connects Painter to the NVIDIA RTX Remix Toolkit. Pull a captured mesh and its material into Painter, paint, and push the textures straight back onto the Remix material.
 
-**v1.0.0** · tested with Substance 3D Painter 12.2 and RTX Remix Toolkit 1.6.1 · [Changelog](CHANGELOG.md)
+**v1.1.0** · tested with Substance 3D Painter 12.2 and RTX Remix Toolkit 1.6.1 · [Changelog](CHANGELOG.md)
 
-## What's new in 1.0
+## What's new in 1.1
+
+- **See every Remix map in Painter's viewport.** The new **RTX Remix preview shader** renders like Painter's standard alpha-blended PBR shader, and also shows anisotropy and Remix's subsurface maps (transmittance, thickness, single scattering). Pull, Import and Add Remix Channels switch to it for you.
+- **Simpler settings.** Presets are gone: every change saves as you make it and is loaded again the next time Painter starts.
+
+## What's in 1.0
 
 - **Every RTX Remix texture map.** Albedo (with opacity in the alpha), normal, roughness, metallic, height and emissive, plus anisotropy and subsurface transmittance, thickness and single scattering. Turn each one on or off in **Settings > Texture Maps**.
 - **OpenGL or DirectX normals, end to end.** Each project keeps the normal convention it was created with. Push exports in that convention and tells Remix which one it is, so Remix's octahedral conversion is always right.
-- **Presets and autosave.** Every settings change saves immediately. Save named presets and switch between them from the dock panel.
 - **Works with Remix 1.6.** Pushes use Remix's validated update path and its default ingest pipeline. Import builds a real fill layer.
-- **Settings survive updates.** They now live in `%APPDATA%\Substance2Remix\`, outside the plugin folder.
+- **Settings survive updates.** They live in `%APPDATA%\Substance2Remix\`, outside the plugin folder.
 
 ## Features
 
@@ -19,8 +23,9 @@ A Substance 3D Painter plugin that connects Painter to the NVIDIA RTX Remix Tool
 - **Push to Remix**: exports the active texture set and ingests it through Remix's own pipeline (octahedral normal conversion, DDS compression, ingest metadata). It then assigns the textures to the material and saves the Remix layer.
 - **Force Push to Selected Material**: relinks the project to whatever material is selected in Remix and pushes under new file names, so earlier ingests are never overwritten.
 - **Link to Selected Remix Material** and **Show Linked Material in Remix**: relink without pushing, or select the linked material in Remix.
-- **Add Remix Channels**: adds the Painter channels for every map you've switched on, so the extra maps are ready to paint.
-- **Dock panel**: shows the live Remix connection, the linked material, the project's normal convention, the active preset and the running operation, with the main actions one click away.
+- **Add Remix Channels**: adds the Painter channels for every map you've switched on, so the extra maps are ready to paint, and switches the viewport to the RTX Remix preview shader.
+- **RTX Remix preview shader**: a viewport shader that shows every map Remix uses (see [Viewport preview](#viewport-preview)).
+- **Dock panel**: shows the live Remix connection, the linked material, the project's normal convention and the running operation, with the main actions one click away.
 - **Optional Blender re-unwrap** for captures with unusable UVs. The newest installed Blender is found automatically.
 - **Diagnostics**: one dialog with the Painter, Remix, tool, settings and project-link state, plus the plugin log.
 
@@ -35,7 +40,7 @@ A Substance 3D Painter plugin that connects Painter to the NVIDIA RTX Remix Tool
 
 ## Installation
 
-1. Download `Substance2Remix-v1.0.0.zip` from the [latest release](https://github.com/skurtyyskirts/Substance2Remix/releases/latest).
+1. Download `Substance2Remix-v1.1.0.zip` from the [latest release](https://github.com/skurtyyskirts/Substance2Remix/releases/latest).
 2. Close Substance 3D Painter.
 3. Extract the zip into Painter's plugin folder:
    `Documents\Adobe\Adobe Substance 3D Painter\python\plugins`
@@ -47,7 +52,7 @@ In RTX Remix, start the Toolkit and open your mod project before you pull or pus
 
 ### Updating
 
-Close Painter, delete the old `substance2remix` folder and extract the new one in its place. Your settings and presets live in `%APPDATA%\Substance2Remix\` and are kept.
+Close Painter, delete the old `substance2remix` folder and extract the new one in its place. Your settings live in `%APPDATA%\Substance2Remix\` and are kept.
 
 **Upgrading from 0.x:** older versions kept `settings.json` inside the plugin folder. Extract the new version over the old folder, or copy the old `settings.json` into the new `substance2remix` folder, before starting Painter. It is migrated to `%APPDATA%\Substance2Remix\` on first start. If your old folder had a different name, delete it so Painter doesn't load two copies.
 
@@ -78,6 +83,21 @@ The link to the Remix material is stored inside the `.spp` file, so pushing stil
 
 Painter 12 names channels after OpenPBR. On older Painter versions the plugin falls back to the legacy names (Anisotropy Level, Absorption Color, Scattering Color).
 
+## Viewport preview
+
+Painter's standard shaders don't read most of Remix's extra maps. The usual "PBR - Metal Rough with alpha blending" shader ignores anisotropy, transmittance, thickness and single scattering. You could paint them, but you couldn't see them.
+
+The plugin ships the **RTX Remix preview shader** (`rtx-remix-preview`). It is that same standard shader, so the usual maps look exactly as before, plus:
+
+- **Anisotropy**: highlights stretch along the mesh tangent, as in Remix (Remix has no anisotropy angle).
+- **Subsurface**: where any of the transmittance, thickness or single-scattering maps is painted, light coming through the surface is filtered by the transmittance color over the painted thickness and tinted by the single-scattering color. Thicker areas let less light through.
+
+Pull, Import (when the material has anisotropy or subsurface maps) and **Add Remix Channels** switch the project to it automatically. **Substance2Remix > Use RTX Remix Preview Shader** switches any project. Turn the automatic switch off in **Settings > Texture Maps**. The shader is imported into the project, so the `.spp` opens fine without the plugin.
+
+Its **RTX Remix Preview** controls are in Painter's **Shader Settings**: subsurface preview strength, the thickness assumed where none is painted, and which User channel holds the thickness map (the plugin sets this).
+
+The subsurface part is a viewport approximation. RTX Remix renders the final look, and the shader only changes what you see in Painter, never what is pushed.
+
 ## Normal maps: OpenGL or DirectX
 
 - **New projects** use **Settings > Project > Normal Map Format**. Pull stores that choice in the project.
@@ -87,22 +107,20 @@ Painter 12 names channels after OpenPBR. On older Painter versions the plugin fa
 
 The pushed map is octahedral, so the Remix material's **Normal Map Encoding** must be *Octahedral*. That's the default for captured materials. If you changed it in Remix, set it back.
 
-## Settings and presets
+## Settings
 
-Open **Substance2Remix > Settings...** or use the panel's **Settings...** button. Changes are saved as you make them.
+Open **Substance2Remix > Settings...** or use the panel's **Settings...** button. Every change is saved as you make it and loaded again the next time Painter starts; there's no OK button to remember.
 
 | Tab | What it controls |
 | --- | --- |
 | Connection | Remix API address, request timeout, connection test |
 | Project | Auto-import after Pull, texture resolution, normal map format, project template, tiling-plane pulls, Blender re-unwrap |
-| Texture Maps | Which Remix maps Push and Import include, and the Painter channel behind each one |
+| Texture Maps | Which Remix maps Push and Import include, the Painter channel behind each one, and the RTX Remix preview shader |
 | Export | Export format, aspect-ratio restore, Remix output subfolder, export folder |
 | Paths | texconv, Blender, custom unwrap script, plugin log |
 | Advanced | Log level, Blender Smart UV parameters |
 
-**Presets** sit at the top of the Settings dialog. Use **Save As...** to name the current setup and **Save** to update the active preset. Switch presets from the dialog or the dock panel. "Unsaved changes" means your settings differ from the active preset. A preset stores workflow settings only: the Remix address, tool paths and export folder stay as they are. **Restore Defaults** resets the settings and keeps your presets.
-
-Settings are stored in `%APPDATA%\Substance2Remix\settings.json` and presets in `presets.json` next to it.
+**Restore Defaults** resets every setting (it asks first). Settings are stored in `%APPDATA%\Substance2Remix\settings.json`.
 
 ## Troubleshooting
 
@@ -110,6 +128,7 @@ Settings are stored in `%APPDATA%\Substance2Remix\settings.json` and presets in 
 - **A map isn't pushed**: check that it's switched on in **Settings > Texture Maps** and that its channel exists in the active texture set. **Add Remix Channels** adds it.
 - **"Remix rejected the anisotropy/subsurface maps"**: the material's shader has no such inputs (for example a translucent material). The standard maps are still pushed.
 - **Normals look inverted in Remix**: check the panel's "Normals:" line against how you painted, and make sure the Remix material's Normal Map Encoding is Octahedral.
+- **Anisotropy or subsurface paint doesn't show in Painter**: the project still uses another shader. Run **Substance2Remix > Use RTX Remix Preview Shader**. For subsurface, raise **Subsurface preview strength** in Shader Settings if the effect is too subtle.
 - **Diagnostics...** shows the full state. The plugin log is `logs/remix_connector.log` in the plugin folder (**Open Log Folder**).
 
 ## Notes

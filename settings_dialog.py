@@ -9,19 +9,16 @@ from .settings_schema import TEXTURE_RESOLUTIONS, NORMAL_MAP_FORMATS, EXPORT_FOR
 TestConnectionFn = Callable[[Dict], Tuple[bool, str]]
 
 _NORMAL_FORMAT_LABELS = {"opengl": "OpenGL (Painter default)", "directx": "DirectX"}
-_NO_PRESET = "(no preset)"
 # Coalesces bursts of edits (spin box arrows, typing) into one save.
 _SAVE_DELAY_MS = 300
 
 
 class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
-    """Settings with autosave and named presets.
+    """Settings that save themselves: every change is written as it's made.
 
     ``controller`` owns the settings (RemixConnectorPlugin in Painter). It
-    needs ``settings``, ``update_settings(values)``, ``reset_settings()``,
-    ``preset_names()``, ``active_preset()``, ``preset_modified()``,
-    ``save_preset(name)``, ``apply_preset(name)`` and ``delete_preset(name)``;
-    the settings methods return the new settings dict.
+    needs ``settings``, ``update_settings(values)`` and ``reset_settings()``;
+    both methods return the new settings dict.
     """
 
     def __init__(
@@ -55,7 +52,6 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
 
         header = QtWidgets.QLabel(f"<b>{PLUGIN_NAME}</b> <span style='color:#888'>v{PLUGIN_VERSION}</span>")
         root.addWidget(header)
-        root.addLayout(self._build_preset_row())
 
         self.tabs = QtWidgets.QTabWidget(self)
         root.addWidget(self.tabs, 1)
@@ -69,7 +65,7 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
 
         footer = QtWidgets.QHBoxLayout()
         self.reset_btn = QtWidgets.QPushButton("Restore Defaults")
-        self.reset_btn.setToolTip("Reset every setting to its default. Saved presets are kept.")
+        self.reset_btn.setToolTip("Reset every setting to its default.")
         self.saved_label = QtWidgets.QLabel("Changes are saved automatically.")
         self.saved_label.setStyleSheet("color:#888")
         self.close_btn = QtWidgets.QPushButton("Close")
@@ -84,107 +80,11 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         self.close_btn.clicked.connect(self.accept)
 
         self._load_fields(self._settings)
-        self._refresh_presets()
 
-    # --- presets ---
-    def _build_preset_row(self):
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("Preset"))
-        self.preset_combo = QtWidgets.QComboBox()
-        self.preset_combo.setMinimumWidth(220)
-        self.preset_combo.setToolTip("Load a saved preset. Presets store workflow settings, not machine paths.")
-        self.preset_save_btn = QtWidgets.QPushButton("Save")
-        self.preset_save_btn.setToolTip("Update the selected preset with the current settings.")
-        self.preset_save_as_btn = QtWidgets.QPushButton("Save As...")
-        self.preset_save_as_btn.setToolTip("Save the current settings as a new preset.")
-        self.preset_delete_btn = QtWidgets.QPushButton("Delete")
-        self.preset_state = QtWidgets.QLabel("")
-        self.preset_state.setStyleSheet("color:#d9a441")
-        row.addWidget(self.preset_combo, 1)
-        row.addWidget(self.preset_save_btn)
-        row.addWidget(self.preset_save_as_btn)
-        row.addWidget(self.preset_delete_btn)
-        row.addWidget(self.preset_state)
-        self.preset_combo.activated.connect(self._on_preset_chosen)
-        self.preset_save_btn.clicked.connect(self._save_preset)
-        self.preset_save_as_btn.clicked.connect(self._save_preset_as)
-        self.preset_delete_btn.clicked.connect(self._delete_preset)
-        return row
-
-    def _refresh_presets(self):
-        active = self._controller.active_preset()
-        modified = self._controller.preset_modified()
-        self.preset_combo.blockSignals(True)
-        self.preset_combo.clear()
-        self.preset_combo.addItem(_NO_PRESET, "")
-        for name in self._controller.preset_names():
-            self.preset_combo.addItem(name, name)
-        idx = self.preset_combo.findData(active)
-        self.preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self.preset_combo.blockSignals(False)
-        self.preset_save_btn.setEnabled(bool(active) and modified)
-        self.preset_delete_btn.setEnabled(bool(active))
-        self.preset_state.setText("Unsaved changes" if modified else "")
-
+    # --- helpers ---
     def _confirm(self, title, text):
         Box = QtWidgets.QMessageBox
         return Box.question(self, f"{PLUGIN_NAME} - {title}", text, Box.Yes | Box.No, Box.No) == Box.Yes
-
-    def _on_preset_chosen(self, index):
-        self._flush()
-        name = self.preset_combo.itemData(index) or ""
-        active = self._controller.active_preset()
-        if name == active:
-            return
-        if not name:
-            # Detach from the preset; the settings themselves don't change.
-            self._settings = self._controller.update_settings({"active_preset": ""})
-            self._refresh_presets()
-            return
-        if self._controller.preset_modified():
-            question = f"Your settings have changes that aren't saved in '{active}'. Load '{name}' anyway?"
-        elif not active:
-            question = f"Load preset '{name}'? It replaces your current workflow settings."
-        else:
-            question = None
-        if question and not self._confirm("Load Preset", question):
-            self._refresh_presets()
-            return
-        self._settings = self._controller.apply_preset(name)
-        self._load_fields(self._settings)
-        self._refresh_presets()
-        self._show_saved(f"Loaded preset '{name}'.")
-
-    def _save_preset(self):
-        name = self._controller.active_preset()
-        if not name:
-            return self._save_preset_as()
-        self._flush()
-        self._settings = self._controller.save_preset(name)
-        self._refresh_presets()
-        self._show_saved(f"Preset '{name}' updated.")
-
-    def _save_preset_as(self):
-        self._flush()
-        suggested = self._controller.active_preset() or "My Preset"
-        name, ok = QtWidgets.QInputDialog.getText(self, f"{PLUGIN_NAME} - Save Preset", "Preset name:", text=suggested)
-        name = (name or "").strip()
-        if not ok or not name:
-            return
-        if name in self._controller.preset_names() and name != self._controller.active_preset():
-            if not self._confirm("Save Preset", f"A preset named '{name}' already exists. Replace it?"):
-                return
-        self._settings = self._controller.save_preset(name)
-        self._refresh_presets()
-        self._show_saved(f"Saved preset '{name}'.")
-
-    def _delete_preset(self):
-        name = self._controller.active_preset()
-        if not name or not self._confirm("Delete Preset", f"Delete the preset '{name}'? Your current settings stay as they are."):
-            return
-        self._settings = self._controller.delete_preset(name)
-        self._refresh_presets()
-        self._show_saved(f"Deleted preset '{name}'.")
 
     # --- tab builders ---
     def _build_tab_connection(self):
@@ -306,6 +206,13 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         note.setStyleSheet("color:#888")
         layout.addWidget(note)
 
+        self.preview_shader = QtWidgets.QCheckBox("Show every Remix map in Painter's viewport (RTX Remix preview shader)")
+        self.preview_shader.setToolTip(
+            "Pull, Import and Add Remix Channels switch the project to the RTX Remix preview shader. It renders "
+            "like Painter's standard alpha-blended PBR shader and also shows anisotropy and an approximation of "
+            "Remix's subsurface maps. It only changes Painter's viewport, never what is pushed.")
+        layout.addWidget(self.preview_shader)
+
         if self._add_channels_fn is not None:
             row = QtWidgets.QHBoxLayout()
             self.add_channels_btn = QtWidgets.QPushButton("Add Checked Channels to the Active Texture Set")
@@ -317,7 +224,7 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         layout.addStretch(1)
 
         self.map_checks["albedo"].toggled.connect(lambda on: self.map_checks[OPACITY].setEnabled(on))
-        self._watch(*self.map_checks.values())
+        self._watch(*self.map_checks.values(), self.preview_shader)
         self.tabs.addTab(w, "Texture Maps")
 
     def _build_tab_export(self):
@@ -484,6 +391,7 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
             for key, check in self.map_checks.items():
                 check.setChecked(bool(maps.get(key, True)))
             self.map_checks[OPACITY].setEnabled(self.map_checks["albedo"].isChecked())
+            self.preview_shader.setChecked(bool(s.get("use_remix_preview_shader", True)))
 
             self._select_text(self.export_format, s.get("export_file_format", "png"))
             self.restore_aspect.setChecked(bool(s.get("restore_original_aspect_ratio_on_export", True)))
@@ -517,6 +425,7 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
             "auto_unwrap_with_blender_on_pull": bool(self.auto_unwrap.isChecked()),
 
             "texture_maps": {key: bool(check.isChecked()) for key, check in self.map_checks.items()},
+            "use_remix_preview_shader": bool(self.preview_shader.isChecked()),
 
             "export_file_format": self.export_format.currentText().strip().lower(),
             "restore_original_aspect_ratio_on_export": bool(self.restore_aspect.isChecked()),
@@ -542,7 +451,6 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
     def _commit(self):
         self._save_timer.stop()
         self._settings = self._controller.update_settings(self._gather())
-        self._refresh_presets()
         self._show_saved("Saved.")
 
     def _flush(self):
@@ -552,7 +460,9 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
 
     def _show_saved(self, text):
         self.saved_label.setText(text)
-        QtCore.QTimer.singleShot(2500, lambda: self.saved_label.setText("Changes are saved automatically."))
+        # The label is the timer's context, so Qt drops the timer if the dialog is deleted first.
+        label = self.saved_label
+        QtCore.QTimer.singleShot(2500, label, lambda: label.setText("Changes are saved automatically."))
 
     def _test_connection(self):
         if not self._test_connection_fn:
@@ -572,12 +482,11 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
             self._add_channels_fn()
 
     def _reset_defaults(self):
-        if not self._confirm("Restore Defaults", "Reset every setting to its default? Saved presets are kept."):
+        if not self._confirm("Restore Defaults", "Reset every setting to its default?"):
             return
         self._save_timer.stop()
         self._settings = self._controller.reset_settings()
         self._load_fields(self._settings)
-        self._refresh_presets()
         self.test_result.setText("")
         self._show_saved("Defaults restored.")
 
