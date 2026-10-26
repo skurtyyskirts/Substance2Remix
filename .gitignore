@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+# Vendored dependencies ship their compiled modules (one per supported Painter Python).
+!_vendor/**/*.pyd
 .Python
 env/
 venv/
@@ -12,6 +14,7 @@ venv.bak/
 logs/
 Pulled Textures/
 assets/gotoingest/
+_temp/
 settings.json
 .vscode/
 .idea/

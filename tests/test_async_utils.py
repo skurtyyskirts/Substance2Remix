@@ -1,12 +1,7 @@
 import unittest
-import sys
-import os
-import traceback
-import builtins
 from unittest.mock import MagicMock, patch
 
-# Insert the parent directory of the app into sys.path to allow `import async_utils`
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ._isolated import load_isolated
 
 class MockQObject:
     pass
@@ -40,36 +35,9 @@ mock_qt.Slot = MockSlot
 class TestAsyncUtils(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # We need to temporarily modify __import__ ONLY for this test suite
-        # because the module uses a relative import `from .qt_utils` at the module level.
-        # Following the memory instruction:
-        # "temporarily override builtins.__import__ in the test setup to intercept the
-        # specific relative import (e.g., checking name and level == 1) to return the mocked module,
-        # then restore builtins.__import__."
-
-        cls.original_import = builtins.__import__
-
-        def custom_import(name, globals=None, locals=None, fromlist=(), level=0):
-            if level == 1 and name == 'qt_utils':
-                return mock_qt
-            return cls.original_import(name, globals, locals, fromlist, level)
-
-        builtins.__import__ = custom_import
-
-        # Clear out any existing cached version
-        if 'async_utils' in sys.modules:
-            del sys.modules['async_utils']
-
-        import async_utils
-        cls.async_utils = async_utils
-
-    @classmethod
-    def tearDownClass(cls):
-        builtins.__import__ = cls.original_import
-
-        # Clean up so we don't pollute subsequent tests
-        if 'async_utils' in sys.modules:
-            del sys.modules['async_utils']
+        # async_utils does `from .qt_utils import ...`; load it inside a
+        # throwaway package whose qt_utils is the mock above.
+        cls.async_utils = load_isolated("async_utils", qt_utils=mock_qt)
 
     def test_worker_success(self):
         """Test happy path where worker completes successfully."""
@@ -90,11 +58,11 @@ class TestAsyncUtils(unittest.TestCase):
 
         worker = self.async_utils.Worker(crashing_fn)
 
-        # Suppress traceback print
+        # Errors are reported only through the signal (no stderr noise in Painter's log).
         with patch('traceback.print_exc') as mock_print_exc:
             worker.run()
 
-        mock_print_exc.assert_called_once()
+        mock_print_exc.assert_not_called()
         worker.signals.error.emit.assert_called_once()
 
         # Check arguments emitted

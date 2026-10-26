@@ -101,8 +101,11 @@ class TestSettingsSchema(unittest.TestCase):
         _detect_texconv_path.cache_clear()
 
         settings = default_settings("dummy_dir")
-        self.assertEqual(settings["settings_version"], 1)
+        self.assertEqual(settings["settings_version"], settings_schema.SETTINGS_VERSION)
         self.assertEqual(settings["api_base_url"], "http://localhost:8011")
+        self.assertEqual(settings["normal_map_format"], "opengl")
+        self.assertEqual(settings["project_texture_resolution"], 2048)
+        self.assertTrue(settings["auto_import_textures_on_pull"])
         self.assertEqual(settings["poll_timeout"], 60.0)
         self.assertEqual(settings["log_level"], "info")
 
@@ -141,6 +144,28 @@ class TestSettingsSchema(unittest.TestCase):
         input_settings_texconv = {"texconv_path": ""}
         sanitized_texconv = sanitize_settings(input_settings_texconv, "dummy_dir")
         self.assertEqual(sanitized_texconv["texconv_path"], "")
+
+    @patch.object(settings_schema, "_detect_blender_path", return_value="C:/Blender 5.2/blender.exe")
+    def test_migrations_and_new_keys(self, _mock_blender):
+        sanitized = sanitize_settings({
+            "include_opacity_map": True,  # retired: Remix has no opacity texture input
+            "normal_map_format": "DirectX",
+            "project_texture_resolution": "3000",
+            "blender_executable_path": "C:/missing/Blender 5.0/blender.exe",
+        }, "dummy_dir")
+        self.assertNotIn("include_opacity_map", sanitized)
+        self.assertEqual(sanitized["normal_map_format"], "directx")
+        self.assertEqual(sanitized["project_texture_resolution"], 2048)
+        # A stale Blender path (uninstalled version) falls back to the newest install.
+        self.assertEqual(sanitized["blender_executable_path"], "C:/Blender 5.2/blender.exe")
+
+    def test_detect_blender_prefers_newest(self):
+        found = [r"C:\Program Files\Blender Foundation\Blender 4.4\blender.exe",
+                 r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
+                 r"C:\Program Files\Blender Foundation\Blender 5.10\blender.exe"]
+        with patch.object(settings_schema.glob, "glob", return_value=found), \
+                patch.object(settings_schema.os.path, "isfile", return_value=True):
+            self.assertTrue(settings_schema._detect_blender_path().endswith(r"Blender 5.10\blender.exe"))
 
     def test_atomic_write_json(self):
         data = {"key": "value"}

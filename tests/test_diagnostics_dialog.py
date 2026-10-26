@@ -1,34 +1,10 @@
-import sys
-import os
-import builtins
 import unittest
 from unittest.mock import MagicMock
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from ._isolated import load_isolated
+
 
 class TestDiagnosticsDialog(unittest.TestCase):
-    def setUp(self):
-        # Save original state to avoid test pollution
-        self.orig_sys_modules = dict(sys.modules)
-        self.orig_import = builtins.__import__
-
-        # Clean up any existing import of the module to allow testing both QT_AVAILABLE states
-        if 'diagnostics_dialog' in sys.modules:
-            del sys.modules['diagnostics_dialog']
-
-    def tearDown(self):
-        # Restore original state
-        builtins.__import__ = self.orig_import
-
-        # Remove any newly imported modules during the test to avoid polluting other tests
-        keys_to_remove = [k for k in sys.modules if k not in self.orig_sys_modules]
-        for k in keys_to_remove:
-            del sys.modules[k]
-
-        # Restore any modified modules
-        for k, v in self.orig_sys_modules.items():
-            sys.modules[k] = v
-
     def _import_with_qt(self, qt_available=True):
         mock_qt_utils = MagicMock()
         mock_qt_utils.QT_AVAILABLE = qt_available
@@ -61,32 +37,31 @@ class TestDiagnosticsDialog(unittest.TestCase):
         else:
             mock_qt_utils.QtWidgets.QDialog = object
 
-        def custom_import(name, globals=None, locals=None, fromlist=(), level=0):
-            if name == "qt_utils" and level == 1:
-                return mock_qt_utils
-            return self.orig_import(name, globals, locals, fromlist, level)
-
-        builtins.__import__ = custom_import
-
-        # Import the module
-        import diagnostics_dialog
-        return diagnostics_dialog, mock_qt_utils
+        return load_isolated("diagnostics_dialog", qt_utils=mock_qt_utils), mock_qt_utils
 
     def test_init_with_qt_available(self):
         dd_module, mock_qt = self._import_with_qt(True)
         dialog = dd_module.DiagnosticsDialog("Test Diagnostics Text")
 
         # Verify the actual methods from the file are called
-        self.assertIn(('setWindowTitle', "RTX Remix Connector - Diagnostics"), dialog.mock_calls_record)
+        self.assertIn(('setWindowTitle', "Substance2Remix - Diagnostics"), dialog.mock_calls_record)
         self.assertIn(('setMinimumWidth', 760), dialog.mock_calls_record)
         self.assertIn(('setMinimumHeight', 520), dialog.mock_calls_record)
 
         # Verify text was set to the text_edit component
         mock_qt.QtWidgets.QPlainTextEdit.return_value.setPlainText.assert_called_with("Test Diagnostics Text")
 
-        # Verify copy and close button connections
+        # Verify log folder, copy and close button connections
+        mock_qt.QtWidgets.QPushButton.return_value.clicked.connect.assert_any_call(dialog._open_log_folder)
         mock_qt.QtWidgets.QPushButton.return_value.clicked.connect.assert_any_call(dialog._copy)
         mock_qt.QtWidgets.QPushButton.return_value.clicked.connect.assert_any_call(dialog.accept)
+
+    def test_open_log_folder_uses_desktop_services(self):
+        dd_module, mock_qt = self._import_with_qt(True)
+        dialog = dd_module.DiagnosticsDialog("Test", log_file_path="C:/plugin/logs/remix_connector.log")
+        dialog._open_log_folder()
+        mock_qt.QtCore.QUrl.fromLocalFile.assert_called_with("C:/plugin/logs")
+        mock_qt.QtGui.QDesktopServices.openUrl.assert_called_once()
 
     def test_init_without_qt_available(self):
         dd_module, mock_qt = self._import_with_qt(False)

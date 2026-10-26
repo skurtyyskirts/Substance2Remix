@@ -1,89 +1,79 @@
-# Substance Painter to RTX Remix Connector
+# Substance2Remix
 
-This plugin creates a bridge between Adobe Substance 3D Painter and NVIDIA's RTX Remix, allowing artists to seamlessly send and receive textures and meshes between the two applications.
+A Substance 3D Painter plugin that connects Painter to the NVIDIA RTX Remix Toolkit. Pull a captured mesh and its material into Painter, paint, and push the textures straight back onto the Remix material.
 
 ## Features
 
-- **Pull from Remix**: Create a new Substance Painter project using the selected mesh from RTX Remix. The project is automatically linked for future push/pull operations.
-- **Push to Remix**: Export textures from Substance Painter and automatically ingest them into the selected Remix material.
-- **Force Push to Remix**: Push textures to a *different* selected material in Remix, allowing you to reuse your Substance Painter work on multiple assets.
-- **Import Textures from Remix**: Pull textures from a linked material in Remix into the current Substance Painter project.
-- **Auto-unwrap with Blender**: Optionally use Blender to automatically UV unwrap meshes pulled from Remix, streamlining the texturing process.
-- **Progress UI**: Long-running operations show a progress/status dialog driven by worker status/progress signals.
-- **Diagnostics & Logs**: Built-in Diagnostics panel and a plugin log file (`logs/remix_connector.log`) to help troubleshoot connection/path issues.
-- **Settings Panel**: Professional tabbed settings UI with browse buttons and a one-click connection test.
+- **Pull from Remix**: creates a Painter project from the mesh (or several meshes) selected in the Remix viewport, linked to their material. The material's existing Remix textures are imported as a fill layer, and the texture set takes the source texture's aspect ratio (for example 512×2048 for a 1:4 texture).
+- **Import Textures from Remix**: adds the linked material's current textures to the open project as one undoable fill layer. Octahedral normal maps are converted back to tangent space, and albedo alpha goes to the Opacity channel.
+- **Push to Remix**: exports the active texture set, ingests the textures through Remix's own pipeline (octahedral normal conversion, DDS compression, ingest metadata), assigns them to the material and saves the Remix layer.
+- **Force Push to Selected Material**: relinks the project to whatever material is selected in Remix and pushes under new file names, so earlier ingests are never overwritten.
+- **Link to Selected Remix Material** and **Show Linked Material in Remix**: relink without pushing, or select the linked material in Remix.
+- **Dock panel**: shows the live Remix connection, the linked material and the running operation, with the main actions one click away.
+- **Optional Blender re-unwrap** for captures with unusable UVs (finds the newest installed Blender automatically).
+- **Diagnostics**: one dialog with the Painter, Remix, tool and project-link state, plus the plugin log.
 
 ## Requirements
 
-- Adobe Substance 3D Painter
-- NVIDIA RTX Remix
-- Blender (optional, for auto-unwrap feature)
-- `texconv.exe` (a copy is included with this plugin)
+- Adobe Substance 3D Painter, tested on 12.2. Older versions need the `substance_painter.layerstack` Python API.
+- NVIDIA RTX Remix Toolkit with a project open (tested on 1.6.1). Its REST API listens on `http://localhost:8011` by default.
+- Blender (optional, only for the re-unwrap option)
+
+`texconv.exe` (DirectXTex), `requests` and Pillow are bundled.
 
 ## Installation
 
-1.  Download the latest release from the [GitHub releases page](https://github.com/skurtyyskirts/Substance2Remix/releases).
-2.  Locate your Substance Painter plugins directory. This is typically found at: `Documents\Adobe\Adobe Substance 3D Painter\python\plugins`.
-3.  Copy the `Substance2Remix` folder into the `plugins` directory.
-4.  Launch Substance Painter. The plugin will be available under the **Window > RTX Remix Connector** menu.
+1. Copy the plugin folder into Painter's plugin directory, usually `Documents\Adobe\Adobe Substance 3D Painter\python\plugins`. Name the folder `substance2remix`, since the folder name is what Painter lists.
+2. Start Painter and enable it under **Python > substance2remix**.
+3. The **Substance2Remix** menu appears in the menu bar and the panel docks on the side. If you close the panel, its icon in the dock bar reopens it.
 
-## How to Use
+## Workflow
 
-### Connecting to Remix
+1. In the RTX Remix viewport, select the mesh you want to texture. Its material is picked up automatically. Shift-click several meshes that share a material to bundle them into one project.
+2. In Painter, choose **Pull from Remix**. If the current project has unsaved changes, you're asked first. If the selection spans several materials, you choose which one to link.
+3. Paint.
+4. Choose **Push to Remix**. Only channels that exist in the texture set are pushed. The normal map includes your height detail and any baked normal map.
 
-Before using the push/pull features, ensure that RTX Remix is running and that a project is open.
+The link to the Remix material is stored inside the `.spp` file, so pushing still works after you save, close and reopen the project.
 
-### Pulling a Mesh from Remix
+## Settings
 
-1.  In RTX Remix, select the mesh you want to texture.
-2.  In Substance Painter, go to **Window > RTX Remix Connector > Pull from Remix**.
-3.  A new Substance Painter project will be created with the selected mesh. If the **Auto-Unwrap with Blender** option is enabled in the settings, the mesh will be unwrapped before the project is created.
+**Substance2Remix > Settings...**
 
-### Importing Existing Textures
+| Tab | What it controls |
+|-----|------------------|
+| Connection | Remix API address, request timeout, connection test |
+| Project | Auto-import after Pull, texture resolution, normal map format (OpenGL/DirectX), project template, tiling-plane pulls, Blender re-unwrap |
+| Export | Export format, aspect-ratio restore, Remix output subfolder, export folder |
+| Paths | texconv, Blender, custom unwrap script, plugin log |
+| Advanced | Log level, Blender Smart UV parameters |
 
-After pulling a mesh, you can import its existing textures from Remix:
+## Notes
 
-1.  Go to **Window > RTX Remix Connector > Import Textures from Remix**.
-2.  The plugin will find the textures associated with the linked material in Remix and import them into your current Substance Painter project.
+- **Re-unwrapping changes UVs.** With the Blender option on, the project's UVs no longer match the mesh in Remix, so pushed textures only line up after you replace that mesh in Remix.
+- **Opacity** is pushed in the albedo alpha channel, which is where Remix's AperturePBR material reads it.
+- Pulled textures are staged in `Pulled Textures/<Remix project>/<material hash>/` inside the plugin folder, and the plugin log is `logs/remix_connector.log`.
 
-### Pushing Textures to Remix
+## Development
 
-1.  After texturing your mesh in Substance Painter, go to **Window > RTX Remix Connector > Push to Remix**.
-2.  The plugin will export your textures and update the material in Remix.
-
-### Force Pushing to a Different Material
-
-If you want to apply your textures to a different material in Remix:
-
-1.  In RTX Remix, select the new target material.
-2.  In Substance Painter, go to **Window > RTX Remix Connector > Force Push to Remix**.
-3.  The plugin will export the textures and apply them to the newly selected material.
-
-### Settings
-
-The Settings panel (**Window > RTX Remix Connector > Settings...**) allows you to configure the following:
-
--   **API Base URL / Timeout**: Connection settings for the RTX Remix REST API (includes a **Test Connection** button).
--   **Blender Executable Path**: The path to your `blender.exe` file (optional; required only for auto-unwrap).
--   **Texconv Path**: The path to the `texconv.exe` utility (used to convert `.dds` pulled from Remix into a Painter-friendly format). A copy is included with this plugin and should be detected automatically.
--   **Export Options**: Choose export format and optionally export/push a dedicated **Opacity** texture.
--   **Log Level**: The verbosity of the plugin's logs.
+Run the tests with Painter's bundled Python, which has PySide6 and matches the vendored Pillow build. See `CLAUDE.md` for the exact command.
 
 ## Changelog
 
-### v0.5.0 - Major Refactor & Async Support
-- **Modular Codebase**: Refactored monolithic `core.py` into specialized modules (`painter_controller`, `remix_api`, `texture_processor`, etc.) for better maintainability.
-- **Async Operations**: Long-running tasks (import/export) now run in background threads with a progress bar, preventing Painter from freezing.
-- **Improved Dependency Management**: Dependencies (`requests`, `PIL`, etc.) are now vendored or better managed to ensure stability.
-- **Force Push (Relink)**: Added ability to relink a project to a new Remix material hash and force push textures.
-- **Diagnostics**: Added `diagnostics_dialog.py` for better troubleshooting.
-- **Settings**: Persistent settings via `settings.json` (auto-generated) and improved Settings dialog.
-- **Fixes**: Numerous bug fixes in texture import/export and path handling.
+### v1.0.0
+- Works with RTX Remix Toolkit 1.6: texture assignment uses Remix's validated (non-forced) update path, and ingest keeps Remix's default pipeline so normal maps are converted to octahedral encoding.
+- Import Textures now builds a real fill layer. It previously imported the files without assigning them.
+- Remix BC5 normal maps convert and decode correctly in Painter.
+- Pillow works on Painter 12 (Python 3.13). The bundled copy had only Python 3.11 binaries.
+- Painter API calls run on the main thread, operations can't overlap, and unsaved projects are never closed without asking.
+- Fails fast with a clear message when Remix isn't running.
+- Blender re-unwrap works on Blender 4.x/5.x, and its output no longer lands inside the Remix project's captures.
+- New dock panel, menu sections, Link / Show-in-Remix actions and an expanded Diagnostics dialog.
+- Removed dead features: the auto-discovery that probed a Remix endpoint which doesn't exist, and the separate opacity map.
 
-## Contributing
-
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+### v0.5.0
+- Modular refactor, background workers, Force Push (relink), diagnostics and settings dialogs.
 
 ## License
 
-[MIT](https://choosealicense.com/licenses/mit/)
+[MIT](https://choosealicense.com/licenses/mit/). Third-party components are listed in `THIRD_PARTY_LICENSES.md`.
