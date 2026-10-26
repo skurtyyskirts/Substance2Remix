@@ -1,12 +1,53 @@
+import glob
 import os
+import re
 import tempfile
 from functools import lru_cache
 from typing import Any, Dict, Tuple
 
+from .pbr_maps import TOGGLE_KEYS
 from .plugin_info import PLUGIN_ID
 
 DEFAULT_REMIX_API_BASE_URL = "http://localhost:8011"
-SETTINGS_VERSION = 1
+SETTINGS_VERSION = 3
+
+TEXTURE_RESOLUTIONS = (512, 1024, 2048, 4096)
+NORMAL_MAP_FORMATS = ("opengl", "directx")
+EXPORT_FORMATS = ("png", "tga")
+POLL_TIMEOUT_RANGE = (0.5, 300.0)
+
+# Keys that older versions wrote but no longer mean anything.
+_RETIRED_KEYS = (
+    # AperturePBR has no opacity texture input; opacity rides in the albedo alpha.
+    "include_opacity_map",
+)
+
+# Workflow settings a preset stores. Machine-specific values (Remix address,
+# tool and export paths, log level) stay out so presets can be shared.
+PRESET_KEYS = (
+    "use_simple_tiling_mesh_on_pull",
+    "simple_tiling_mesh_path",
+    "painter_import_template_path",
+    "auto_import_textures_on_pull",
+    "project_texture_resolution",
+    "normal_map_format",
+    "auto_unwrap_with_blender_on_pull",
+    "blender_smart_uv_angle_limit",
+    "blender_smart_uv_area_weight",
+    "blender_smart_uv_island_margin",
+    "blender_smart_uv_stretch_to_bounds",
+    "export_file_format",
+    "restore_original_aspect_ratio_on_export",
+    "remix_output_subfolder",
+    "texture_maps",
+)
+
+
+def user_config_dir() -> str:
+    """Where settings and presets live: outside the plugin folder, so
+    reinstalling or updating the plugin keeps them."""
+    base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, PLUGIN_ID)
 
 
 @lru_cache(maxsize=4)
@@ -24,6 +65,26 @@ def _detect_texconv_path(plugin_dir: str) -> str:
         return ""
 
 
+def _version_key(path: str):
+    m = re.search(r"Blender\s*([\d.]+)", path, re.IGNORECASE)
+    return tuple(int(p) for p in m.group(1).split(".") if p.isdigit()) if m else ()
+
+
+@lru_cache(maxsize=1)
+def _detect_blender_path() -> str:
+    """Newest Blender in the standard install locations, or ''.
+
+    Cached: every autosaved settings change runs sanitize_settings().
+    """
+    candidates = []
+    for root in {os.environ.get("ProgramFiles", r"C:\Program Files"), r"C:\Program Files"}:
+        candidates += glob.glob(os.path.join(root, "Blender Foundation", "Blender*", "blender.exe"))
+    candidates = [c for c in candidates if os.path.isfile(c)]
+    if not candidates:
+        return ""
+    return max(candidates, key=_version_key)
+
+
 def default_settings(plugin_dir: str) -> Dict[str, Any]:
     """
     Returns default settings (with a few best-effort auto-detections).
@@ -39,6 +100,9 @@ def default_settings(plugin_dir: str) -> Dict[str, Any]:
         "use_simple_tiling_mesh_on_pull": False,
         "simple_tiling_mesh_path": "assets/meshes/plane_tiling.usd",
         "painter_import_template_path": "",
+        "auto_import_textures_on_pull": True,
+        "project_texture_resolution": 2048,
+        "normal_map_format": "opengl",
         "auto_unwrap_with_blender_on_pull": False,
         # --- Blender unwrap ---
         "blender_executable_path": "",
@@ -51,12 +115,15 @@ def default_settings(plugin_dir: str) -> Dict[str, Any]:
         # --- Push/Export ---
         "painter_export_path": os.path.join(tempfile.gettempdir(), "RemixConnector_Export"),
         "export_file_format": "png",
-        # Optional extra exports (off by default to preserve current behavior)
-        "include_opacity_map": False,
+        "restore_original_aspect_ratio_on_export": True,
         # --- Remix output ---
         "remix_output_subfolder": "Textures/PainterConnector_Ingested",
+        # --- Texture maps (push + import) ---
+        "texture_maps": {key: True for key in TOGGLE_KEYS},
         # --- Tools ---
         "texconv_path": _detect_texconv_path(plugin_dir),
+        # --- Presets ---
+        "active_preset": "",
         # --- Internal / reserved ---
         "plugin_id": PLUGIN_ID,
     }
@@ -103,10 +170,13 @@ def sanitize_settings(settings: Dict[str, Any], plugin_dir: str) -> Dict[str, An
     """
     merged = dict(default_settings(plugin_dir))
     merged.update(settings or {})
+    for key in _RETIRED_KEYS:
+        merged.pop(key, None)
 
     # --- basic type coercions ---
     merged["api_base_url"] = _coerce_str(merged.get("api_base_url"), DEFAULT_REMIX_API_BASE_URL).strip() or DEFAULT_REMIX_API_BASE_URL
-    merged["poll_timeout"] = _coerce_float(merged.get("poll_timeout"), 60.0)
+    lo, hi = POLL_TIMEOUT_RANGE
+    merged["poll_timeout"] = min(hi, max(lo, _coerce_float(merged.get("poll_timeout"), 60.0)))
 
     merged["log_level"] = _coerce_str(merged.get("log_level"), "info").strip().lower() or "info"
     if merged["log_level"] not in {"debug", "info", "warning", "error"}:
@@ -115,9 +185,22 @@ def sanitize_settings(settings: Dict[str, Any], plugin_dir: str) -> Dict[str, An
     merged["use_simple_tiling_mesh_on_pull"] = _coerce_bool(merged.get("use_simple_tiling_mesh_on_pull"), False)
     merged["simple_tiling_mesh_path"] = _coerce_str(merged.get("simple_tiling_mesh_path"), "assets/meshes/plane_tiling.usd")
     merged["painter_import_template_path"] = _coerce_str(merged.get("painter_import_template_path"), "")
+    merged["auto_import_textures_on_pull"] = _coerce_bool(merged.get("auto_import_textures_on_pull"), True)
+    try:
+        resolution = int(_coerce_float(merged.get("project_texture_resolution"), 2048))
+    except (TypeError, ValueError, OverflowError):
+        resolution = 2048
+    merged["project_texture_resolution"] = resolution if resolution in TEXTURE_RESOLUTIONS else 2048
+    merged["normal_map_format"] = _coerce_str(merged.get("normal_map_format"), "opengl").strip().lower()
+    if merged["normal_map_format"] not in NORMAL_MAP_FORMATS:
+        merged["normal_map_format"] = "opengl"
     merged["auto_unwrap_with_blender_on_pull"] = _coerce_bool(merged.get("auto_unwrap_with_blender_on_pull"), False)
 
-    merged["blender_executable_path"] = _coerce_str(merged.get("blender_executable_path"), "")
+    # Blender: keep a valid configured path; otherwise fall back to the newest install.
+    blender = _coerce_str(merged.get("blender_executable_path"), "").strip()
+    if not blender or not os.path.isfile(blender):
+        blender = _detect_blender_path() or blender
+    merged["blender_executable_path"] = blender
     merged["blender_unwrap_script_path"] = _coerce_str(merged.get("blender_unwrap_script_path"), "")
     merged["blender_unwrap_output_suffix"] = _coerce_str(merged.get("blender_unwrap_output_suffix"), "_spUnwrapped") or "_spUnwrapped"
     merged["blender_smart_uv_angle_limit"] = _coerce_float(merged.get("blender_smart_uv_angle_limit"), 66.0)
@@ -126,13 +209,16 @@ def sanitize_settings(settings: Dict[str, Any], plugin_dir: str) -> Dict[str, An
     merged["blender_smart_uv_stretch_to_bounds"] = _coerce_bool(merged.get("blender_smart_uv_stretch_to_bounds"), False)
 
     merged["painter_export_path"] = _coerce_str(merged.get("painter_export_path"), os.path.join(tempfile.gettempdir(), "RemixConnector_Export"))
+    # Lossless formats only: JPEG has no alpha (where opacity rides) and adds artifacts before DDS compression.
     merged["export_file_format"] = _coerce_str(merged.get("export_file_format"), "png").strip().lower() or "png"
-    if merged["export_file_format"] not in {"png", "tga", "jpg", "jpeg"}:
+    if merged["export_file_format"] not in EXPORT_FORMATS:
         merged["export_file_format"] = "png"
 
-    merged["include_opacity_map"] = _coerce_bool(merged.get("include_opacity_map"), False)
+    merged["restore_original_aspect_ratio_on_export"] = _coerce_bool(merged.get("restore_original_aspect_ratio_on_export"), True)
 
     merged["remix_output_subfolder"] = _coerce_str(merged.get("remix_output_subfolder"), "Textures/PainterConnector_Ingested").strip() or "Textures/PainterConnector_Ingested"
+    merged["texture_maps"] = sanitize_texture_maps(merged.get("texture_maps"))
+    merged["active_preset"] = _coerce_str(merged.get("active_preset"), "").strip()
 
     # texconv: if empty/invalid, try local copy
     texconv = _coerce_str(merged.get("texconv_path"), "").strip()
@@ -145,6 +231,25 @@ def sanitize_settings(settings: Dict[str, Any], plugin_dir: str) -> Dict[str, An
     merged["settings_version"] = SETTINGS_VERSION
     merged["plugin_id"] = PLUGIN_ID
     return merged
+
+
+def sanitize_texture_maps(value: Any) -> Dict[str, bool]:
+    """Every toggleable map with a bool; unknown keys are dropped, missing ones on."""
+    value = value if isinstance(value, dict) else {}
+    return {key: _coerce_bool(value.get(key), True) for key in TOGGLE_KEYS}
+
+
+def enabled_maps(settings: Dict[str, Any]) -> set:
+    """Map keys switched on in Settings > Texture Maps."""
+    return {k for k, on in sanitize_texture_maps((settings or {}).get("texture_maps")).items() if on}
+
+
+def preset_values(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """The part of ``settings`` a preset stores (deep-copied where needed)."""
+    values = {k: settings[k] for k in PRESET_KEYS if k in settings}
+    if isinstance(values.get("texture_maps"), dict):
+        values["texture_maps"] = dict(values["texture_maps"])
+    return values
 
 
 def atomic_write_json(path: str, data: Dict[str, Any]) -> Tuple[bool, str]:
@@ -171,5 +276,3 @@ def atomic_write_json(path: str, data: Dict[str, Any]) -> Tuple[bool, str]:
         except Exception:
             pass
         return False, str(e)
-
-

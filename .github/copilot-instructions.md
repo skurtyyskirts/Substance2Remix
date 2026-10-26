@@ -4,7 +4,7 @@ A **Substance Painter plugin** (Python) that imports/exports textures between Su
 
 ## Orientation
 - Read `CLAUDE.md` first.
-- Core modules: `core.py`, `remix_api.py` (REST client for the Remix Toolkit), `painter_controller.py`, `texture_processor.py`, `async_utils.py`. UI uses PySide/Qt (`*_dialog.py`, `qt_utils.py`).
+- Core modules: `core.py`, `pbr_maps.py` (the table of texture maps everything derives from), `remix_api.py` (REST client for the Remix Toolkit), `painter_controller.py`, `texture_processor.py`, `settings_store.py`, `async_utils.py`. UI uses PySide/Qt (`*_dialog.py`, `ui_panel.py`, `qt_utils.py`).
 - Tests live in `tests/` — run them before claiming work complete.
 
 ## Conventions

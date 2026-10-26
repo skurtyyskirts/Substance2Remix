@@ -68,7 +68,8 @@ class Worker(QRunnable):
         try:
             result = self.fn(*self.args, **self.kwargs)
         except Exception:
-            traceback.print_exc()
+            # Reported through the error signal; the receiver decides whether
+            # it is an expected failure or a bug worth a traceback in the log.
             exctype, value = sys.exc_info()[:2]
             try:
                 self.signals.error.emit((exctype, value, traceback.format_exc()))

@@ -1,154 +1,186 @@
-import os
-import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from ._isolated import import_plugin_module
 
 # painter_controller handles missing substance_painter on import; tests
 # replace painter_controller.substance_painter in setUp.
-import painter_controller
-from painter_controller import PainterController
+painter_controller = import_plugin_module("painter_controller")
+PainterController = painter_controller.PainterController
+aspect_matched_resolution = painter_controller.aspect_matched_resolution
 
-class TestPainterControllerAssignTexture(unittest.TestCase):
+
+class TestAspectMatchedResolution(unittest.TestCase):
+    def test_square_source(self):
+        self.assertEqual(aspect_matched_resolution(1024, 1024, 2048), (2048, 2048))
+
+    def test_tall_power_of_two_ratio_is_exact(self):
+        self.assertEqual(aspect_matched_resolution(256, 1024, 2048), (512, 2048))
+
+    def test_wide_source(self):
+        self.assertEqual(aspect_matched_resolution(2048, 1024, 4096), (4096, 2048))
+
+    def test_non_power_of_two_ratio_rounds(self):
+        # 3:4 is closer to 1:1 than 1:2 in log space.
+        self.assertEqual(aspect_matched_resolution(300, 400, 2048), (2048, 2048))
+
+    def test_clamped_to_painter_limits(self):
+        self.assertEqual(aspect_matched_resolution(16, 4096, 8192), (128, 4096))
+        self.assertEqual(aspect_matched_resolution(64, 64, 3000), (2048, 2048))
+
+    def test_unknown_source_is_square(self):
+        self.assertEqual(aspect_matched_resolution(0, 0, 1024), (1024, 1024))
+
+    def test_pow2_ceil_never_goes_below_the_source(self):
+        self.assertEqual(painter_controller.pow2_ceil(3000), 4096)
+        self.assertEqual(painter_controller.pow2_ceil(2048), 2048)
+        self.assertEqual(painter_controller.pow2_ceil(2049), 4096)
+        self.assertEqual(painter_controller.pow2_ceil(9000), 4096)  # Painter's limit
+        self.assertEqual(aspect_matched_resolution(3000, 3000, painter_controller.pow2_ceil(3000)), (4096, 4096))
+
+
+class TestPainterController(unittest.TestCase):
     def setUp(self):
         self.logger = MagicMock()
         self.controller = PainterController(self.logger)
+        self.sp = MagicMock()
+        painter_controller.substance_painter = self.sp
 
-        # Reset the mock for each test
-        painter_controller.substance_painter = MagicMock()
-        painter_controller.substance_painter.textureset = MagicMock()
-        painter_controller.substance_painter.resource = MagicMock()
+    def test_channel_type_and_format_lookup(self):
+        self.assertIs(self.controller.channel_type("albedo"), self.sp.textureset.ChannelType.BaseColor)
+        self.assertIs(self.controller.channel_format("height"), self.sp.textureset.ChannelFormat.L16F)
+        self.assertIsNone(self.controller.channel_type("unknown"))
 
-        # Consistent resource ID mock
-        painter_controller.substance_painter.resource.ResourceID = MagicMock(return_value="mocked_id")
-
-    def test_assign_via_global_textureset_method(self):
-        # 1. Try global set_channel_texture_resource if available
-        channel = MagicMock()
-
-        # Set up the first fallback
-        painter_controller.substance_painter.textureset.set_channel_texture_resource = MagicMock()
-
-        result = self.controller.assign_texture_to_channel(channel, "my_resource")
-
-        self.assertTrue(result)
-        painter_controller.substance_painter.textureset.set_channel_texture_resource.assert_called_once_with(channel, "mocked_id")
-
-    def test_assign_via_channel_instance_method(self):
-        # 2. Instance methods on Channel
-        channel = MagicMock()
-
-        # Disable the first fallback
-        del painter_controller.substance_painter.textureset.set_channel_texture_resource
-
-        # Set up the second fallback
-        channel.set_texture_resource = MagicMock()
-
-        result = self.controller.assign_texture_to_channel(channel, "my_resource")
-
-        self.assertTrue(result)
-        channel.set_texture_resource.assert_called_once_with("mocked_id")
-
-    def test_assign_via_channel_instance_method_alternate(self):
-        # 2. Instance methods on Channel (alternate method name)
-        channel = MagicMock()
-
-        # Disable the first fallback
-        del painter_controller.substance_painter.textureset.set_channel_texture_resource
-
-        # Set up one of the other allowed method names and delete the first one
-        # Because we're using MagicMock, we need to explicitly delete the attributes we don't want to be found
-        # before the one we're testing.
-        del channel.set_texture_resource
-        del channel.setTextureResource
-        del channel.set_resource
-        del channel.setResource
-        channel.assign_texture = MagicMock()
-
-        result = self.controller.assign_texture_to_channel(channel, "my_resource")
-
-        self.assertTrue(result)
-        channel.assign_texture.assert_called_once_with("mocked_id")
-
-    def test_assign_via_stack_method(self):
-        # 3. Stack methods
-        channel = MagicMock()
+    def test_ensure_channel_adds_missing_channel_with_format(self):
         stack = MagicMock()
-        channel.stack = MagicMock(return_value=stack)
+        stack.has_channel.return_value = False
+        self.assertTrue(self.controller.ensure_channel(stack, "emissive"))
+        stack.add_channel.assert_called_once_with(
+            self.sp.textureset.ChannelType.Emissive, self.sp.textureset.ChannelFormat.sRGB8)
 
-        # Disable previous fallbacks
-        del painter_controller.substance_painter.textureset.set_channel_texture_resource
-        for method_name in ['set_texture_resource', 'setTextureResource', 'set_resource', 'setResource', 'assign_texture', 'assignTexture']:
-            delattr(channel, method_name)
+    def test_ensure_channel_keeps_existing(self):
+        stack = MagicMock()
+        stack.has_channel.return_value = True
+        self.assertTrue(self.controller.ensure_channel(stack, "roughness"))
+        stack.add_channel.assert_not_called()
 
-        # Set up the third fallback
-        stack.set_channel_texture_resource = MagicMock()
+    def test_ensure_channel_failure_is_reported(self):
+        stack = MagicMock()
+        stack.has_channel.return_value = False
+        stack.add_channel.side_effect = ValueError("material layering")
+        self.assertFalse(self.controller.ensure_channel(stack, "emissive"))
+        self.logger.warning.assert_called()
 
-        result = self.controller.assign_texture_to_channel(channel, "my_resource")
+    def test_present_pbr_types(self):
+        stack = MagicMock()
+        present = {self.sp.textureset.ChannelType.BaseColor, self.sp.textureset.ChannelType.Normal}
+        stack.has_channel.side_effect = lambda ct: ct in present
+        self.assertEqual(self.controller.present_pbr_types(stack), {"albedo", "normal"})
 
-        self.assertTrue(result)
-        stack.set_channel_texture_resource.assert_called_once_with(channel, "mocked_id")
+    def test_create_fill_layer_sets_only_sourced_channels(self):
+        stack = MagicMock()
+        stack.has_channel.return_value = True
+        fill = MagicMock()
+        self.sp.layerstack.insert_fill.return_value = fill
+        self.sp.resource.import_project_resource.side_effect = lambda path, usage: MagicMock(identifier=MagicMock(return_value=f"rid:{path}"))
 
-    def test_assign_via_module_level_fallback(self):
-        # 4. Module level fallbacks
-        channel = MagicMock()
+        assigned, errors = self.controller.create_fill_layer(stack, {"albedo": "a.png", "normal": "n.png"}, "Remix mat_X")
 
-        # Disable previous fallbacks
-        del painter_controller.substance_painter.textureset.set_channel_texture_resource
-        for method_name in ['set_texture_resource', 'setTextureResource', 'set_resource', 'setResource', 'assign_texture', 'assignTexture']:
-            delattr(channel, method_name)
-        del channel.stack
+        self.assertEqual(sorted(assigned), ["albedo", "normal"])
+        self.assertEqual(errors, [])
+        self.sp.layerstack.ScopedModification.assert_called_once_with("Remix mat_X")
+        fill.set_name.assert_called_once_with("Remix mat_X")
+        self.assertEqual(fill.active_channels, {self.sp.textureset.ChannelType.BaseColor, self.sp.textureset.ChannelType.Normal})
+        fill.set_source.assert_any_call(self.sp.textureset.ChannelType.BaseColor, "rid:a.png")
+        fill.set_source.assert_any_call(self.sp.textureset.ChannelType.Normal, "rid:n.png")
 
-        # Set up the fourth fallback
-        painter_controller.substance_painter.textureset.set_channel_resource = MagicMock()
+    def test_create_fill_layer_deactivates_channels_whose_source_failed(self):
+        stack = MagicMock()
+        stack.has_channel.return_value = True
+        fill = MagicMock()
+        self.sp.layerstack.insert_fill.return_value = fill
+        self.sp.resource.import_project_resource.side_effect = lambda path, usage: MagicMock(identifier=MagicMock(return_value=path))
 
-        result = self.controller.assign_texture_to_channel(channel, "my_resource")
+        def set_source(ct, rid):
+            if rid == "n.png":
+                raise ValueError("bad")
 
-        self.assertTrue(result)
-        painter_controller.substance_painter.textureset.set_channel_resource.assert_called_once_with(channel, "mocked_id")
+        fill.set_source.side_effect = set_source
 
-    def test_assign_fails_when_all_fallbacks_fail(self):
-        channel = MagicMock()
+        assigned, errors = self.controller.create_fill_layer(stack, {"albedo": "a.png", "normal": "n.png"}, "Remix")
 
-        # Disable all fallbacks
-        del painter_controller.substance_painter.textureset.set_channel_texture_resource
-        for method_name in ['set_texture_resource', 'setTextureResource', 'set_resource', 'setResource', 'assign_texture', 'assignTexture']:
-            delattr(channel, method_name)
-        del channel.stack
-        for method_name in ['set_channel_resource', 'set_channel_texture', 'set_channel_map']:
-            delattr(painter_controller.substance_painter.textureset, method_name)
+        self.assertEqual(assigned, ["albedo"])
+        self.assertIn("normal", errors[0])
+        # The failed Normal channel must not stay active with its default value.
+        self.assertEqual(fill.active_channels, {self.sp.textureset.ChannelType.BaseColor})
+        self.sp.layerstack.delete_node.assert_not_called()
 
-        result = self.controller.assign_texture_to_channel(channel, "my_resource")
+    def test_create_fill_layer_removes_an_empty_layer(self):
+        stack = MagicMock()
+        stack.has_channel.return_value = True
+        fill = MagicMock()
+        fill.set_source.side_effect = ValueError("bad")
+        self.sp.layerstack.insert_fill.return_value = fill
+        assigned, _ = self.controller.create_fill_layer(stack, {"albedo": "a.png"}, "Remix")
+        self.assertEqual(assigned, [])
+        self.sp.layerstack.delete_node.assert_called_once_with(fill)
 
-        self.assertFalse(result)
+    def test_create_fill_layer_skips_failed_imports(self):
+        stack = MagicMock()
+        stack.has_channel.return_value = True
+        self.sp.resource.import_project_resource.side_effect = RuntimeError("bad file")
+        assigned, errors = self.controller.create_fill_layer(stack, {"albedo": "a.png"}, "Remix")
+        self.assertEqual(assigned, [])
+        self.assertIn("import failed", errors[0])
+        self.sp.layerstack.insert_fill.assert_not_called()
 
-    def test_exception_in_fallback_continues_to_next(self):
-        channel = MagicMock()
+    def test_set_resolution_only_when_different(self):
+        ts = MagicMock()
+        ts.get_resolution.return_value = MagicMock(width=2048, height=2048)
+        self.assertTrue(self.controller.set_resolution(ts, 2048, 2048))
+        ts.set_resolution.assert_not_called()
+        self.assertTrue(self.controller.set_resolution(ts, 512, 2048))
+        ts.set_resolution.assert_called_once()
 
-        # Make the first fallback raise an exception
-        painter_controller.substance_painter.textureset.set_channel_texture_resource = MagicMock(side_effect=Exception("Failed"))
+    def test_channel_type_falls_back_to_legacy_name(self):
+        # Painter 12 calls it SpecularRoughnessAnisotropy; older versions only know Anisotropylevel.
+        self.sp.textureset.ChannelType = SimpleNamespace(Anisotropylevel="legacy-aniso")
+        self.assertEqual(self.controller.channel_type("anisotropy"), "legacy-aniso")
+        self.sp.textureset.ChannelType = SimpleNamespace(SpecularRoughnessAnisotropy="aniso", Anisotropylevel="aniso")
+        self.assertEqual(self.controller.channel_type("anisotropy"), "aniso")
 
-        # Make the second fallback work
-        channel.set_texture_resource = MagicMock()
+    def _user_stack(self, labels):
+        """A stack whose User channels carry ``labels`` ({index: label})."""
+        self.sp.textureset.ChannelType = SimpleNamespace(**{f"User{i}": f"User{i}" for i in range(32)})
+        stack = MagicMock()
+        stack.has_channel.side_effect = lambda ct: ct in {f"User{i}" for i in labels}
+        stack.get_channel.side_effect = lambda ct: MagicMock(label=MagicMock(return_value=labels[int(ct[4:])]))
+        return stack
 
-        result = self.controller.assign_texture_to_channel(channel, "my_resource")
+    def test_thickness_lives_in_a_labelled_user_channel(self):
+        stack = self._user_stack({0: "Wetness", 1: "remix thickness"})
+        self.assertEqual(self.controller.channel_type("thickness", stack), "User1")
+        self.assertIsNone(self.controller.channel_type("thickness"))  # needs the stack
 
-        self.assertTrue(result)
-        channel.set_texture_resource.assert_called_once_with("mocked_id")
+    def test_ensure_thickness_adds_the_first_free_user_channel(self):
+        stack = self._user_stack({0: "Wetness"})
+        self.assertTrue(self.controller.ensure_channel(stack, "thickness"))
+        stack.add_channel.assert_called_once_with("User1", self.sp.textureset.ChannelFormat.L8, "Remix Thickness")
 
-    def test_coerce_to_resource_id_fallback(self):
-        # Test what happens if substance_painter.resource.ResourceID is not available or raises
-        del painter_controller.substance_painter.resource.ResourceID
+    def test_document_map_names_come_from_the_channel(self):
+        stack = MagicMock()
+        stack.get_channel.return_value.type.return_value.name = "SpecularRoughnessAnisotropy"
+        names = self.controller.document_map_names(stack, {"anisotropy", "albedo", "normal"})
+        # Maps with a fixed name (albedo) or a virtual map (normal) aren't resolved.
+        self.assertEqual(names, {"anisotropy": "specularroughnessanisotropy"})
 
-        channel = MagicMock()
-        painter_controller.substance_painter.textureset.set_channel_texture_resource = MagicMock()
+    def test_active_stack_falls_back_to_first_texture_set(self):
+        self.sp.textureset.get_active_stack.side_effect = RuntimeError("no active stack")
+        ts = MagicMock()
+        self.sp.textureset.all_texture_sets.return_value = [ts]
+        self.assertIs(self.controller.active_stack(), ts.get_stack.return_value)
 
-        result = self.controller.assign_texture_to_channel(channel, "my_resource")
-
-        self.assertTrue(result)
-        # Should be called with the original string since coercion failed
-        painter_controller.substance_painter.textureset.set_channel_texture_resource.assert_called_once_with(channel, "my_resource")
 
 if __name__ == "__main__":
     unittest.main()

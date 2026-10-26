@@ -1,7 +1,16 @@
+"""Thin wrapper over the Substance 3D Painter API used by the plugin.
+
+Every function here touches Painter state and must run on the main thread.
+"""
+import math
+
+from .pbr_maps import PBR_MAPS, MAPS_BY_KEY, OPACITY
+
 try:
     import substance_painter.textureset
     import substance_painter.resource
     import substance_painter.project
+    import substance_painter.layerstack
     import substance_painter.ui
     PAINTER_AVAILABLE = True
 except ImportError:
@@ -13,118 +22,260 @@ except ImportError:
     substance_painter.textureset = MockPainterModule()
     substance_painter.resource = MockPainterModule()
     substance_painter.project = MockPainterModule()
+    substance_painter.layerstack = MockPainterModule()
     substance_painter.ui = MockPainterModule()
+
+# Plugin PBR type -> (ChannelType members to try, ChannelFormat used when the channel is created).
+# Painter 12 names channels after OpenPBR and keeps the older names as aliases.
+CHANNEL_SPECS = {m.key: (m.channels, m.channel_format) for m in PBR_MAPS}
+CHANNEL_SPECS[OPACITY] = (("Opacity",), "L8")
+
+USER_CHANNEL_COUNT = 32
+
+MIN_RESOLUTION = 128
+MAX_RESOLUTION = 4096
+
+
+def _pow2_floor(value):
+    return 1 << max(0, int(math.floor(math.log2(max(1, value)))))
+
+
+def pow2_ceil(value):
+    """Smallest power of two >= ``value``, capped at Painter's maximum resolution."""
+    return min(MAX_RESOLUTION, 1 << max(0, int(math.ceil(math.log2(max(1, value))))))
+
+
+def aspect_matched_resolution(source_w, source_h, long_side):
+    """Power-of-two (width, height) with ``long_side`` on the longer axis and
+    the closest power-of-two aspect ratio to ``source_w:source_h``.
+
+    Painter texture sets must be powers of two, so a 1:4 source maps exactly
+    while e.g. 3:4 rounds to 1:1. Export restores the exact ratio afterwards.
+    """
+    long_side = min(MAX_RESOLUTION, max(MIN_RESOLUTION, _pow2_floor(long_side)))
+    if source_w <= 0 or source_h <= 0:
+        return long_side, long_side
+    ratio = max(source_w, source_h) / float(min(source_w, source_h))
+    steps = int(round(math.log2(ratio)))
+    short_side = max(MIN_RESOLUTION, long_side >> steps)
+    return (long_side, short_side) if source_w >= source_h else (short_side, long_side)
+
 
 class PainterController:
     def __init__(self, logger):
         self.logger = logger
-        self.PAINTER_CHANNEL_TO_REMIX_PBR_MAP = {
-            "basecolor": "albedo", "base_color": "albedo", "albedo": "albedo", "diffuse": "albedo",
-            "normal": "normal", "height": "height", "displacement": "height", "roughness": "roughness",
-            "metallic": "metallic", "metalness": "metallic", "emissive": "emissive", "emission": "emissive",
-            "opacity": "opacity",
-        }
-        self.REMIX_PBR_TO_PAINTER_CHANNEL_MAP = {
-            "albedo": "baseColor", "normal": "normal", "height": "height", "roughness": "roughness",
-            "metallic": "metallic", "emissive": "emissive", "opacity": "opacity",
-        }
-        self.PAINTER_STRING_TO_CHANNELTYPE_MAP = {}
-        self._init_channel_type_map()
 
     def _log_info(self, msg):
         if hasattr(self.logger, 'info'): self.logger.info(msg)
         elif isinstance(self.logger, dict) and 'info' in self.logger: self.logger['info'](msg)
 
-    def _log_error(self, msg):
-        if hasattr(self.logger, 'error'): self.logger.error(msg)
-        elif isinstance(self.logger, dict) and 'error' in self.logger: self.logger['error'](msg)
+    def _log_warning(self, msg):
+        if hasattr(self.logger, 'warning'): self.logger.warning(msg)
+        elif isinstance(self.logger, dict) and 'warning' in self.logger: self.logger['warning'](msg)
 
-    def _init_channel_type_map(self):
-        try:
-            if hasattr(substance_painter.textureset, 'ChannelType'):
-                CT = substance_painter.textureset.ChannelType
-                # Check if it's a dummy or real
-                if hasattr(CT, 'BaseColor'):
-                    self.PAINTER_STRING_TO_CHANNELTYPE_MAP = {
-                        "baseColor": CT.BaseColor,
-                        "height": CT.Height,
-                        "normal": CT.Normal,
-                        "roughness": CT.Roughness,
-                        "metallic": CT.Metallic,
-                        "emissive": CT.Emissive,
-                        "opacity": CT.Opacity,
-                    }
-                    self._log_info("Painter ChannelType map initialized.")
-        except Exception as e:
-            self._log_error(f"Error initializing ChannelType map: {e}")
-
-    def _coerce_to_resource_id(self, resource_identifier_candidate):
-        try:
-            if hasattr(substance_painter.resource, 'ResourceID') and isinstance(resource_identifier_candidate, str):
-                return substance_painter.resource.ResourceID(resource_identifier_candidate)
-        except Exception:
-            pass
-        return resource_identifier_candidate
-
-    def assign_texture_to_channel(self, channel_object, resource_identifier):
-        """Attempt to assign a texture resource to a Painter channel using multiple API fallbacks."""
-        rid = self._coerce_to_resource_id(resource_identifier)
-
-        # 1. Try global set_channel_texture_resource if available
-        if hasattr(substance_painter.textureset, 'set_channel_texture_resource'):
-            try:
-                substance_painter.textureset.set_channel_texture_resource(channel_object, rid)
-                return True
-            except Exception: pass
-
-        # 2. Instance methods on Channel
-        for method_name in ['set_texture_resource', 'setTextureResource', 'set_resource', 'setResource', 'assign_texture', 'assignTexture']:
-            try:
-                method = getattr(channel_object, method_name, None)
-                if callable(method):
-                    method(rid)
-                    return True
-            except Exception: continue
-
-        # 3. Stack methods
-        try:
-            stack = channel_object.stack() if hasattr(channel_object, 'stack') else None
-            if stack:
-                for method_name in ['set_channel_texture_resource', 'setChannelTextureResource', 'assign_texture_to_channel']:
-                    try:
-                        method = getattr(stack, method_name, None)
-                        if callable(method):
-                            method(channel_object, rid)
-                            return True
-                    except Exception: continue
-        except Exception: pass
-
-        # 4. Module level fallbacks
-        for func_name in ['set_channel_resource', 'set_channel_texture', 'set_channel_map']:
-            try:
-                func = getattr(substance_painter.textureset, func_name, None)
-                if callable(func):
-                    func(channel_object, rid)
-                    return True
-            except Exception: continue
-
-        return False
+    # --- Project ---
 
     def is_project_open(self):
-        if hasattr(substance_painter.project, 'is_open'):
-            return substance_painter.project.is_open()
-        return False
+        try:
+            return bool(substance_painter.project.is_open())
+        except Exception:
+            return False
 
     def close_project(self):
-        if hasattr(substance_painter.project, 'close'):
-            substance_painter.project.close()
+        substance_painter.project.close()
 
-    def create_project(self, mesh_file_path, template_path=None, project_settings=None):
-        if hasattr(substance_painter.project, 'create'):
-             # This signature depends on API version, keeping it simple or passing args
-             # The original code likely calls it directly. 
-             # For now, I'll let the main logic call substance_painter directly for complex ops 
-             # unless I wrap them fully.
-             pass
-        pass
+    def needs_saving(self):
+        try:
+            return bool(substance_painter.project.needs_saving())
+        except Exception:
+            return False
 
+    def project_file_path(self):
+        try:
+            return substance_painter.project.file_path()
+        except Exception:
+            return None
+
+    # --- Texture sets / channels ---
+
+    def channel_type(self, pbr_type, stack=None):
+        """The ChannelType that holds ``pbr_type``, or None.
+
+        Maps kept in a User channel are found by label, so they need ``stack``.
+        """
+        spec = CHANNEL_SPECS.get(pbr_type)
+        if not spec:
+            return None
+        if self._user_label(pbr_type):
+            return self._find_user_channel(stack, pbr_type) if stack is not None else None
+        channel_types = substance_painter.textureset.ChannelType
+        for name in spec[0]:
+            ct = getattr(channel_types, name, None)
+            if ct is not None:
+                return ct
+        return None
+
+    def channel_format(self, pbr_type):
+        spec = CHANNEL_SPECS.get(pbr_type)
+        if not spec:
+            return None
+        return getattr(substance_painter.textureset.ChannelFormat, spec[1], None)
+
+    @staticmethod
+    def _user_label(pbr_type):
+        m = MAPS_BY_KEY.get(pbr_type)
+        return m.user_label if m else ""
+
+    def _user_channel_types(self):
+        channel_types = substance_painter.textureset.ChannelType
+        return [ct for ct in (getattr(channel_types, f"User{i}", None) for i in range(USER_CHANNEL_COUNT)) if ct is not None]
+
+    def _find_user_channel(self, stack, pbr_type):
+        """The User channel labelled for ``pbr_type`` (case-insensitive), or None."""
+        label = self._user_label(pbr_type).lower()
+        for ct in self._user_channel_types():
+            try:
+                if stack.has_channel(ct) and (stack.get_channel(ct).label() or "").strip().lower() == label:
+                    return ct
+            except Exception:
+                continue
+        return None
+
+    def _add_user_channel(self, stack, pbr_type):
+        """Add a labelled User channel in the first free slot. Returns its ChannelType."""
+        for ct in self._user_channel_types():
+            if not stack.has_channel(ct):
+                stack.add_channel(ct, self.channel_format(pbr_type), self._user_label(pbr_type))
+                return ct
+        raise RuntimeError("no free User channel")
+
+    def active_stack(self):
+        """The stack the user is looking at, falling back to the first texture set."""
+        try:
+            stack = substance_painter.textureset.get_active_stack()
+            if stack is not None:
+                return stack
+        except Exception:
+            pass
+        texture_sets = substance_painter.textureset.all_texture_sets() or []
+        return texture_sets[0].get_stack() if texture_sets else None
+
+    def stack_texture_set(self, stack):
+        try:
+            return stack.material()
+        except Exception:
+            return None
+
+    def present_pbr_types(self, stack):
+        """PBR types whose channel exists in ``stack``."""
+        present = set()
+        for pbr in CHANNEL_SPECS:
+            ct = self.channel_type(pbr, stack)
+            try:
+                if ct is not None and stack.has_channel(ct):
+                    present.add(pbr)
+            except Exception:
+                continue
+        return present
+
+    def document_map_names(self, stack, pbr_types):
+        """Export ``documentMap`` names for maps without a fixed name.
+
+        Painter names a document map after its channel type in lower case
+        (e.g. ``user0``), which is what Painter's own export tests use.
+        """
+        names = {}
+        for pbr in pbr_types:
+            m = MAPS_BY_KEY.get(pbr)
+            if m is None or m.doc_map or pbr == "normal":
+                continue
+            ct = self.channel_type(pbr, stack)
+            if ct is None:
+                continue
+            try:
+                names[pbr] = stack.get_channel(ct).type().name.lower()
+            except Exception:
+                names[pbr] = str(getattr(ct, "name", "")).lower()
+        return {k: v for k, v in names.items() if v}
+
+    def ensure_channel(self, stack, pbr_type):
+        """Add the channel for ``pbr_type`` if the stack lacks it. Returns True when present."""
+        try:
+            if self._user_label(pbr_type):
+                if self._find_user_channel(stack, pbr_type) is None:
+                    self._add_user_channel(stack, pbr_type)
+                    self._log_info(f"Added a '{self._user_label(pbr_type)}' User channel to the texture set.")
+                return True
+            ct = self.channel_type(pbr_type)
+            if ct is None:
+                return False
+            if stack.has_channel(ct):
+                return True
+            stack.add_channel(ct, self.channel_format(pbr_type))
+            self._log_info(f"Added missing '{pbr_type}' channel to the texture set.")
+            return True
+        except Exception as e:
+            self._log_warning(f"Could not add the '{pbr_type}' channel: {e}")
+            return False
+
+    def set_resolution(self, texture_set, width, height):
+        try:
+            current = texture_set.get_resolution()
+            if current.width == width and current.height == height:
+                return True
+            texture_set.set_resolution(substance_painter.textureset.Resolution(width, height))
+            self._log_info(f"Texture set resolution set to {width}x{height}.")
+            return True
+        except Exception as e:
+            self._log_warning(f"Could not set texture set resolution to {width}x{height}: {e}")
+            return False
+
+    # --- Layers ---
+
+    def import_texture_resource(self, path):
+        resource = substance_painter.resource.import_project_resource(path, substance_painter.resource.Usage.TEXTURE)
+        return resource.identifier()
+
+    def create_fill_layer(self, stack, sources, layer_name):
+        """Insert one fill layer on top of ``stack`` with a texture per channel.
+
+        ``sources`` maps PBR type -> image path. Only channels that received a
+        texture stay active, so the layer never covers other channels with
+        defaults. The whole insert is one undo step. Returns
+        (assigned_pbr_types, errors).
+        """
+        errors = []
+        resolved = {}
+        for pbr, path in sources.items():
+            if not self.ensure_channel(stack, pbr):
+                errors.append(f"{pbr}: channel unavailable")
+                continue
+            ct = self.channel_type(pbr, stack)
+            if ct is None:
+                errors.append(f"{pbr}: channel unavailable")
+                continue
+            try:
+                resolved[pbr] = (ct, self.import_texture_resource(path))
+            except Exception as e:
+                errors.append(f"{pbr}: import failed ({e})")
+        if not resolved:
+            return [], errors
+
+        layerstack = substance_painter.layerstack
+        with layerstack.ScopedModification(layer_name):
+            fill = layerstack.insert_fill(layerstack.InsertPosition.from_textureset_stack(stack))
+            fill.set_name(layer_name)
+            fill.active_channels = {ct for ct, _ in resolved.values()}
+            assigned = []
+            for pbr, (ct, rid) in resolved.items():
+                try:
+                    fill.set_source(ct, rid)
+                    assigned.append(pbr)
+                except Exception as e:
+                    errors.append(f"{pbr}: {e}")
+            if not assigned:
+                layerstack.delete_node(fill)
+            elif len(assigned) < len(resolved):
+                # A failed channel would otherwise stay active with its default value.
+                fill.active_channels = {resolved[pbr][0] for pbr in assigned}
+        return assigned, errors

@@ -1,0 +1,10 @@
+# Release archives (git archive, GitHub source zips) hold only the installable plugin.
+/tests export-ignore
+/.github export-ignore
+/.claude export-ignore
+/linear export-ignore
+/CLAUDE.md export-ignore
+/pyproject.toml export-ignore
+/requirements-dev.txt export-ignore
+/.gitignore export-ignore
+/.gitattributes export-ignore
