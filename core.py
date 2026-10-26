@@ -18,12 +18,15 @@ _INGEST_MAX_WORKERS = 2
 # Local imports
 from .qt_utils import QObject, Signal, Slot, QThreadPool, QtWidgets, QtCore, QtGui, QT_BINDING
 from .plugin_info import PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_REPO_URL, PLUGIN_DESCRIPTION
-from .remix_api import RemixAPIClient, REMIX_ATTR_SUFFIX_TO_PBR_MAP, PBR_TO_MDL_INPUT_MAP, material_hash_from_prim
+from .pbr_maps import PBR_MAPS, MAPS_BY_KEY, MAP_KEYS, OPACITY, is_extended
+from .remix_api import (RemixAPIClient, REMIX_ATTR_SUFFIX_TO_PBR_MAP, PBR_TO_MDL_INPUT_MAP, NORMAL_FORMAT_NAMES,
+                        material_hash_from_prim)
 from .texture_processor import TextureProcessor, read_image_size, is_octahedral_normal_name
-from .painter_controller import PainterController, aspect_matched_resolution
+from .painter_controller import PainterController, aspect_matched_resolution, pow2_ceil
 from .async_utils import Worker
 from .settings_dialog import create_settings_dialog_instance
-from .settings_schema import sanitize_settings, atomic_write_json
+from .settings_schema import sanitize_settings, enabled_maps, NORMAL_MAP_FORMATS
+from .settings_store import SettingsStore
 from .diagnostics_dialog import DiagnosticsDialog
 
 # --- Logging Setup ---
@@ -38,9 +41,9 @@ except ImportError:
     sp_logging = MockLogger()
 
 DEFAULT_REMIX_API_BASE_URL = "http://localhost:8011"
-SETTINGS_FILE_NAME = "settings.json"
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-SETTINGS_FILE_PATH = os.path.join(PLUGIN_DIR, SETTINGS_FILE_NAME)
+# Settings used to live in the plugin folder; SettingsStore migrates them to the user config folder.
+LEGACY_SETTINGS_FILE_PATH = os.path.join(PLUGIN_DIR, "settings.json")
 LOG_DIR = os.path.join(PLUGIN_DIR, "logs")
 LOG_FILE_PATH = os.path.join(LOG_DIR, "remix_connector.log")
 PULLED_TEXTURES_DIR = os.path.join(PLUGIN_DIR, "Pulled Textures")
@@ -53,15 +56,8 @@ METADATA_CONTEXT = "RTXRemixConnectorLink"
 
 # Exported file suffix per PBR type. "_Normal" lets Remix's octahedral
 # conversion produce the conventional "<hash>_OTH_Normal" name.
-EXPORT_FILE_SUFFIX = {
-    "albedo": "Albedo",
-    "normal": "Normal",
-    "roughness": "Roughness",
-    "metallic": "Metallic",
-    "height": "Height",
-    "emissive": "Emissive",
-}
-_PUSH_ORDER = ("albedo", "normal", "roughness", "metallic", "height", "emissive")
+EXPORT_FILE_SUFFIX = {m.key: m.file_suffix for m in PBR_MAPS}
+_PUSH_ORDER = MAP_KEYS
 
 
 # Link keys describing where the material came from; cleared on relink.
@@ -83,7 +79,8 @@ def _material_file_key(material_prim):
     return re.sub(r"[^A-Za-z0-9_]", "_", name) or "Material"
 
 
-def build_export_maps(material_hash, present_pbr, normal_map_format="opengl", export_format="png"):
+def build_export_maps(material_hash, present_pbr, normal_map_format="opengl", export_format="png",
+                      enabled=None, doc_maps=None):
     """Painter export-preset maps for the channels that exist in the stack.
 
     The normal map uses Painter's ``Normal_OpenGL``/``Normal_DirectX`` virtual
@@ -91,10 +88,17 @@ def build_export_maps(material_hash, present_pbr, normal_map_format="opengl", ex
     normal channel (the plain ``normal`` document map omits both). Opacity
     rides in the albedo alpha, which is where AperturePBR reads it.
 
+    ``enabled`` limits the export to the maps switched on in Settings (None =
+    all). ``doc_maps`` names the document map of channels without a fixed
+    name (see PainterController.document_map_names).
+
     Returns (maps, {file stem: pbr type}).
     """
     params = {"fileFormat": export_format, "bitDepth": "8", "paddingAlgorithm": "infinite",
               "dithering": False, "keepAlpha": True}
+    allowed = set(enabled) if enabled is not None else set(MAP_KEYS) | {OPACITY}
+    present = set(present_pbr) & allowed
+    doc_maps = doc_maps or {}
 
     def rgb(map_type, name):
         return [{"srcMapType": map_type, "srcMapName": name, "srcChannel": c, "destChannel": c} for c in "RGB"]
@@ -103,18 +107,19 @@ def build_export_maps(material_hash, present_pbr, normal_map_format="opengl", ex
         return [{"srcMapType": "documentMap", "srcMapName": name, "srcChannel": "L", "destChannel": "L"}]
 
     channels = {}
-    if "albedo" in present_pbr:
+    if "albedo" in present:
         channels["albedo"] = rgb("documentMap", "baseColor")
-        if "opacity" in present_pbr:
+        if OPACITY in present:
             channels["albedo"].append({"srcMapType": "documentMap", "srcMapName": "opacity", "srcChannel": "L", "destChannel": "A"})
-    if "normal" in present_pbr or "height" in present_pbr:
+    if "normal" in allowed and ("normal" in present_pbr or "height" in present_pbr):
         virtual = "Normal_DirectX" if normal_map_format == "directx" else "Normal_OpenGL"
         channels["normal"] = rgb("virtualMap", virtual)
-    for pbr in ("roughness", "metallic", "height"):
-        if pbr in present_pbr:
-            channels[pbr] = mono(pbr)
-    if "emissive" in present_pbr:
-        channels["emissive"] = rgb("documentMap", "emissive")
+    for m in PBR_MAPS:
+        if m.key in channels or m.key not in present or m.key == "normal":
+            continue
+        name = m.doc_map or doc_maps.get(m.key)
+        if name:
+            channels[m.key] = rgb("documentMap", name) if m.color else mono(name)
 
     maps, stems = [], {}
     for pbr in _PUSH_ORDER:
@@ -207,6 +212,7 @@ class RemixConnectorPlugin(QObject):
             pass
 
         self.settings = {}
+        self.store = SettingsStore(PLUGIN_DIR, legacy_settings_path=LEGACY_SETTINGS_FILE_PATH)
         self.load_settings()
 
         self.logger_adapter = {
@@ -590,27 +596,62 @@ class RemixConnectorPlugin(QObject):
         except Exception:
             pass
 
-    def load_settings(self):
-        raw = {}
-        try:
-            if os.path.exists(SETTINGS_FILE_PATH):
-                with open(SETTINGS_FILE_PATH, "r", encoding="utf-8") as f:
-                    raw = json.load(f) or {}
-        except Exception as e:
-            # Continue with defaults if settings are corrupted/unreadable.
-            self.log_error(f"Failed to load settings (using defaults): {e}", exc_info=True)
-            raw = {}
+    # --- Settings and presets (autosaved through self.store) ---
+    def _log_store_errors(self):
+        for err in self.store.errors:
+            self.log_error(err)
+        self.store.errors = []
 
-        self.settings = sanitize_settings(raw, PLUGIN_DIR)
+    def load_settings(self):
+        self.settings = self.store.load()
+        self._log_store_errors()
 
     def save_settings(self):
-        try:
-            self.settings = sanitize_settings(self.settings or {}, PLUGIN_DIR)
-            ok, err = atomic_write_json(SETTINGS_FILE_PATH, self.settings)
-            if not ok:
-                raise RuntimeError(err or "Unknown error")
-        except Exception as e:
-            self.log_error(f"Failed to save settings: {e}", exc_info=True)
+        self.store.settings = sanitize_settings(self.settings or {}, PLUGIN_DIR)
+        self.store.save()
+        self.settings = self.store.settings
+        self._log_store_errors()
+
+    def _settings_replaced(self, settings):
+        """Adopt new settings (GUI thread). Returns them for the caller."""
+        previous_url = self.settings.get("api_base_url")
+        self.settings = settings
+        self._log_store_errors()
+        if settings.get("api_base_url") != previous_url:
+            self._connection = {"ok": None, "message": "Checking..."}
+            self.refresh_connection()
+        self._emit_state()
+        return settings
+
+    def update_settings(self, values):
+        return self._settings_replaced(self.store.update(values))
+
+    def reset_settings(self):
+        return self._settings_replaced(self.store.reset_to_defaults())
+
+    def preset_names(self):
+        return self.store.preset_names()
+
+    def active_preset(self):
+        return self.store.active_preset
+
+    def preset_modified(self):
+        return self.store.is_modified()
+
+    def save_preset(self, name):
+        settings = self._settings_replaced(self.store.save_preset(name))
+        self.log_info(f"Saved settings preset '{name}'.")
+        return settings
+
+    def apply_preset(self, name):
+        settings = self._settings_replaced(self.store.apply_preset(name))
+        self.log_info(f"Loaded settings preset '{name}'.")
+        return settings
+
+    def delete_preset(self, name):
+        settings = self._settings_replaced(self.store.delete_preset(name))
+        self.log_info(f"Deleted settings preset '{name}'.")
+        return settings
 
     def _texconv_path(self):
         texconv = self.settings.get("texconv_path")
@@ -621,6 +662,13 @@ class RemixConnectorPlugin(QObject):
 
     def _normal_map_format(self):
         return "directx" if self.settings.get("normal_map_format") == "directx" else "opengl"
+
+    def project_normal_format(self, link=None):
+        """Normal map convention of the open project: the one it was created
+        with (stored by Pull), else the setting. GUI thread only."""
+        link = link if link is not None else self.read_link()
+        fmt = (link or {}).get("normal_format")
+        return fmt if fmt in NORMAL_MAP_FORMATS else self._normal_map_format()
 
     # --- Project link (metadata) ---
     def read_link(self):
@@ -646,6 +694,7 @@ class RemixConnectorPlugin(QObject):
                 "original_width": _get("remix_original_width"),
                 "original_height": _get("remix_original_height"),
                 "remix_project": _get("remix_project_file"),
+                "normal_format": _get("remix_normal_format"),
             }
         except Exception as e:
             self.log_debug(f"Could not read project link: {e}")
@@ -680,9 +729,13 @@ class RemixConnectorPlugin(QObject):
         if self._ping_in_flight or self._shutting_down:
             return
         self._ping_in_flight = True
+        url = self.remix_api.api_base_url()
 
         def _done(result):
             self._ping_in_flight = False
+            if url != self.remix_api.api_base_url():
+                # The address changed while this ping ran; its answer is about the old one.
+                return self.refresh_connection()
             ok, msg = result
             if ok != self._connection.get("ok") or msg != self._connection.get("message"):
                 self._connection = {"ok": ok, "message": msg}
@@ -806,6 +859,8 @@ class RemixConnectorPlugin(QObject):
             "remix_project_file": result["project"]["project_file"],
             "remix_mesh_prims": json.dumps(result["meshes"]),
             "remix_source_mesh": mesh_path,
+            # The project is created with this convention (_pull_create_project); pushes and imports use it.
+            "remix_normal_format": self._normal_map_format(),
             "plugin_version": PLUGIN_VERSION,
         }
         uses_plane = os.path.normcase(mesh_path) == os.path.normcase(self._tiling_mesh_path())
@@ -921,7 +976,7 @@ class RemixConnectorPlugin(QObject):
         settings = substance_painter.project.Settings(
             import_cameras=False,
             normal_map_format=(substance_painter.project.NormalMapFormat.DirectX
-                               if self._normal_map_format() == "directx"
+                               if link_extra.get("remix_normal_format") == "directx"
                                else substance_painter.project.NormalMapFormat.OpenGL),
             default_texture_resolution=int(self.settings.get("project_texture_resolution", 2048)),
         )
@@ -964,15 +1019,22 @@ class RemixConnectorPlugin(QObject):
             return
         self._import_start(link["material_prim"], adjust_resolution=False)
 
+    def _import_options(self):
+        """Settings an import uses, read once on the GUI thread."""
+        return {"normal_format": self.project_normal_format(), "maps": enabled_maps(self.settings)}
+
     def _import_start(self, material_prim, adjust_resolution=False, notes=None):
-        self.log_info(f"Importing textures of {material_prim}...")
+        options = self._import_options()
+        self.log_info(f"Importing textures of {material_prim} "
+                      f"(normals as {NORMAL_FORMAT_NAMES[options['normal_format']]})...")
         self._start_worker(
-            self._import_fetch, material_prim,
+            self._import_fetch, material_prim, options,
             on_result=lambda result: self._import_assign(result, adjust_resolution, notes or []),
             title="Import Textures from Remix",
         )
 
-    def _import_fetch(self, material_prim, progress_callback=None, status_callback=None):
+    def _import_fetch(self, material_prim, options=None, progress_callback=None, status_callback=None):
+        options = options or {"normal_format": self._normal_map_format(), "maps": enabled_maps(self.settings)}
         project = self._require_remix_project(status_callback)
         if status_callback: status_callback.emit("Fetching material textures...")
         textures, err = self.remix_api.get_material_textures(material_prim)
@@ -984,7 +1046,7 @@ class RemixConnectorPlugin(QObject):
         for usd_attr, tex_path_raw in textures or []:
             input_name = str(usd_attr).split(':')[-1].lower()
             pbr_type = REMIX_ATTR_SUFFIX_TO_PBR_MAP.get(input_name)
-            if not pbr_type or pbr_type in seen or not tex_path_raw:
+            if not pbr_type or pbr_type in seen or not tex_path_raw or pbr_type not in options["maps"]:
                 continue
             abs_path = os.path.normpath(str(tex_path_raw))
             if not os.path.isabs(abs_path):
@@ -1002,7 +1064,7 @@ class RemixConnectorPlugin(QObject):
         dest_dir = os.path.join(PULLED_TEXTURES_DIR, project["project_name"], material_hash)
         os.makedirs(dest_dir, exist_ok=True)
         texconv = self._texconv_path()
-        target_opengl = self._normal_map_format() == "opengl"
+        target_opengl = options["normal_format"] == "opengl"
 
         total = len(work_items)
         done_counter = [0]
@@ -1043,6 +1105,8 @@ class RemixConnectorPlugin(QObject):
                     source_directx=abs_path.lower().endswith(".rtex.dds"),
                     target_opengl=target_opengl,
                 )
+            elif pbr_type == "anisotropy":
+                self.texture_processor.anisotropy_from_remix(final_path)
             return pbr_type, final_path, size
 
         if status_callback:
@@ -1064,7 +1128,7 @@ class RemixConnectorPlugin(QObject):
                     _bump_progress()
 
         albedo = dict(processed).get("albedo")
-        if albedo:
+        if albedo and OPACITY in options["maps"]:
             try:
                 stem = os.path.splitext(os.path.basename(albedo))[0]
                 opacity = self.texture_processor.extract_alpha(albedo, os.path.join(dest_dir, f"{stem}_opacity.png"))
@@ -1091,8 +1155,9 @@ class RemixConnectorPlugin(QObject):
 
         src_w, src_h = result.get("source_size") or (0, 0)
         if adjust_resolution and src_w and src_h:
-            # Never paint at less than the source's resolution (capped by Painter's limit).
-            long_side = max(int(self.settings.get("project_texture_resolution", 2048)), max(src_w, src_h))
+            # Never paint at less than the source's resolution (capped by Painter's limit);
+            # a non-power-of-two source rounds up, e.g. 3000 px -> 4096.
+            long_side = max(int(self.settings.get("project_texture_resolution", 2048)), pow2_ceil(max(src_w, src_h)))
             w, h = aspect_matched_resolution(src_w, src_h, long_side)
             texture_set = self.painter_controller.stack_texture_set(stack)
             if texture_set is not None:
@@ -1163,12 +1228,27 @@ class RemixConnectorPlugin(QObject):
             return
         self._push_start(link, force_new_root=False)
 
+    def _push_options(self, normal_format=None):
+        """Settings a push uses, read once when it starts. The normal map is
+        exported in ``normal_format`` and Remix is told that same convention,
+        so a settings change made mid-push can't mislabel it."""
+        s = self.settings
+        return {
+            "normal_format": normal_format or self._normal_map_format(),
+            "maps": enabled_maps(s),
+            "export_format": s.get("export_file_format", "png"),
+            "restore_aspect": bool(s.get("restore_original_aspect_ratio_on_export", True)),
+            "output_subfolder": s.get("remix_output_subfolder", "Textures/PainterConnector_Ingested"),
+        }
+
     def _push_start(self, link, force_new_root):
         if not link or not link.get("material_hash"):
             raise RemixError("The project link has no material hash. Use Link to Selected Remix Material.")
+        options = self._push_options(self.project_normal_format(link))
+        self.log_info(f"Pushing to {link['material_prim']} with {NORMAL_FORMAT_NAMES[options['normal_format']]} normals.")
         self._start_worker(
             self._push_preflight, link["material_prim"],
-            on_result=lambda preflight: self._push_export(preflight, link, force_new_root),
+            on_result=lambda preflight: self._push_export(preflight, link, force_new_root, options),
             title="Push to Remix",
         )
 
@@ -1190,20 +1270,20 @@ class RemixConnectorPlugin(QObject):
         return {"project": project, "output_dir": output_dir, "edit_target": edit_target,
                 "shader_path": shader_path, "textures": textures or []}
 
-    def _push_export(self, preflight, link, force_new_root):
+    def _push_export(self, preflight, link, force_new_root, options):
         """GUI thread: Painter's export API must run here."""
         export_path = self.settings.get("painter_export_path") or os.path.join(tempfile.gettempdir(), "RemixConnector_Export")
         os.makedirs(export_path, exist_ok=True)
         self.display_message("Exporting textures...", level="status")
-        exported, notes = self._export_textures(export_path, link["material_hash"])
+        exported, notes = self._export_textures(export_path, link["material_hash"], options)
         original_size = (link.get("original_width"), link.get("original_height"))
         self._start_worker(
-            self._push_ingest, exported, preflight, link, force_new_root, original_size,
+            self._push_ingest, exported, preflight, link, force_new_root, original_size, options,
             on_result=lambda summary: self._push_done(summary, notes),
             title="Push to Remix",
         )
 
-    def _export_textures(self, export_path, material_hash):
+    def _export_textures(self, export_path, material_hash, options):
         import substance_painter.export
         import substance_painter.textureset
 
@@ -1225,26 +1305,49 @@ class RemixConnectorPlugin(QObject):
             notes.append(f"Only the active texture set '{ts_name}' was pushed.")
 
         present = self.painter_controller.present_pbr_types(stack)
-        maps, stems = build_export_maps(
-            material_hash, present, self._normal_map_format(), self.settings.get("export_file_format", "png"))
+        doc_maps = self.painter_controller.document_map_names(stack, present & options["maps"])
+        maps, stems = build_export_maps(material_hash, present, options["normal_format"], options["export_format"],
+                                        enabled=options["maps"], doc_maps=doc_maps)
         if not maps:
-            raise RemixError(f"Texture set '{ts_name}' has no channels Remix can use.")
+            raise RemixError(f"Texture set '{ts_name}' has no channels Remix can use (or they're switched off in "
+                             "Settings > Texture Maps).")
 
-        preset_name = f"Remix_Dynamic_{material_hash}"
-        export_config = {
-            "exportShaderParams": False,
-            "exportPath": export_path,
-            "exportPresets": [{"name": preset_name, "maps": maps}],
-            "exportList": [{"rootPath": root_path, "exportPreset": preset_name}],
-        }
-        res = substance_painter.export.export_project_textures(export_config)
-        status = substance_painter.export.ExportStatus
-        if res.status == status.Cancelled:
-            raise RemixError("Texture export was cancelled.")
-        if res.status not in (status.Success, getattr(status, "Warning", status.Success)):
-            raise RemixError(f"Texture export failed: {res.message}")
-        if res.status != status.Success and res.message:
-            self.log_warning(f"Export warning: {res.message}")
+        def _export(export_maps):
+            """(result, None) on success, (None, error) on failure."""
+            preset_name = f"Remix_Dynamic_{material_hash}"
+            export_config = {
+                "exportShaderParams": False,
+                "exportPath": export_path,
+                "exportPresets": [{"name": preset_name, "maps": export_maps}],
+                "exportList": [{"rootPath": root_path, "exportPreset": preset_name}],
+            }
+            try:
+                result = substance_painter.export.export_project_textures(export_config)
+            except Exception as e:  # Painter raises for some invalid configurations
+                return None, str(e)
+            status = substance_painter.export.ExportStatus
+            if result.status == status.Cancelled:
+                raise RemixError("Texture export was cancelled.")
+            if result.status not in (status.Success, getattr(status, "Warning", status.Success)):
+                return None, result.message
+            if result.status != status.Success and result.message:
+                self.log_warning(f"Export warning: {result.message}")
+            return result, None
+
+        res, err = _export(maps)
+        extras = [m for m in maps if is_extended(stems.get(m["fileName"].lower()))]
+        if res is None and extras:
+            # The anisotropy/subsurface maps use channel names read at runtime; if Painter
+            # rejects one, the whole export fails. Never let them block the standard maps.
+            skipped = [stems[m["fileName"].lower()] for m in extras]
+            self.log_warning(f"Export failed with {', '.join(skipped)} ({err}); retrying without them.")
+            maps = [m for m in maps if m not in extras]
+            if maps:
+                res, _ = _export(maps)
+            if res is not None:
+                notes.append(f"Painter couldn't export {', '.join(skipped)} ({err}); the other maps were pushed.")
+        if res is None:
+            raise RemixError(f"Texture export failed: {err}")
 
         exported = {}
         for files in (res.textures or {}).values():
@@ -1256,27 +1359,42 @@ class RemixConnectorPlugin(QObject):
             raise RemixError("Painter exported no textures.")
         return exported, notes
 
-    def _push_ingest(self, exported, preflight, link, force_new_root, original_size, progress_callback=None, status_callback=None):
+    def _push_ingest(self, exported, preflight, link, force_new_root, original_size, options=None,
+                     progress_callback=None, status_callback=None):
         """Worker: resize, ingest, update the material and save the Remix layer."""
+        options = options or self._push_options()
         exported = dict(exported)
         remix_out_dir = preflight["output_dir"]
+        failed = {}
 
-        if self.settings.get("restore_original_aspect_ratio_on_export", True):
+        if options["restore_aspect"]:
             self._restore_aspect_ratio(exported, original_size, preflight, status_callback)
 
+        if "anisotropy" in exported:
+            try:
+                self.texture_processor.anisotropy_to_remix(exported["anisotropy"])
+            except Exception as e:
+                failed["anisotropy"] = f"could not convert it to Remix's range: {e}"
+                del exported["anisotropy"]
+
         if force_new_root:
-            exported = self._rename_for_force_push(exported, link, remix_out_dir)
+            exported = self._rename_for_force_push(exported, link, remix_out_dir, options["output_subfolder"], failed)
 
         items = [(pbr, exported[pbr]) for pbr in _PUSH_ORDER if pbr in exported]
         total = len(items)
+        if not total:
+            raise RemixError("Nothing to push: " + "; ".join(f"{k}: {v}" for k, v in failed.items()))
         if status_callback: status_callback.emit(f"Ingesting {total} texture{'s' if total != 1 else ''} in Remix...")
         if progress_callback: progress_callback.emit(5)
 
-        ingested, failed = {}, {}
+        ingested = {}
         done = [0]
         lock = threading.Lock()
         with ThreadPoolExecutor(max_workers=min(_INGEST_MAX_WORKERS, total)) as pool:
-            futures = {pool.submit(self.remix_api.ingest_texture, pbr, path, remix_out_dir): pbr for pbr, path in items}
+            futures = {pool.submit(self.remix_api.ingest_texture, pbr, path, remix_out_dir,
+                                   normal_map_format=options["normal_format"],
+                                   output_subfolder=options["output_subfolder"]): pbr
+                       for pbr, path in items}
             for fut, pbr in futures.items():
                 try:
                     res, err = fut.result()
@@ -1301,18 +1419,41 @@ class RemixConnectorPlugin(QObject):
 
         if status_callback: status_callback.emit("Updating the Remix material...")
         shader_path = preflight["shader_path"]
-        textures_to_update = [(f"{shader_path}.inputs:{PBR_TO_MDL_INPUT_MAP[pbr]}", path)
-                              for pbr, path in ingested.items() if pbr in PBR_TO_MDL_INPUT_MAP]
-        success, err = self.remix_api.update_textures_batch(textures_to_update)
-        if not success:
-            raise RemixError(f"Remix rejected the texture update: {err}")
+
+        def _updates(extended):
+            return [(f"{shader_path}.inputs:{PBR_TO_MDL_INPUT_MAP[pbr]}", path)
+                    for pbr, path in ingested.items() if pbr in PBR_TO_MDL_INPUT_MAP and is_extended(pbr) == extended]
+
+        # The standard maps go first and must land. The anisotropy/subsurface
+        # inputs follow in their own batch: a shader without them (e.g. a
+        # translucent material) rejects the whole batch, which mustn't block the rest.
+        assigned = []
+        standard = _updates(extended=False)
+        if standard:
+            success, err = self.remix_api.update_textures_batch(standard)
+            if not success:
+                raise RemixError(f"Remix rejected the texture update: {err}")
+            assigned += [pbr for pbr in ingested if not is_extended(pbr)]
+        extras = _updates(extended=True)
+        if extras:
+            success, err = self.remix_api.update_textures_batch(extras)
+            extra_maps = [pbr for pbr in ingested if is_extended(pbr)]
+            if success:
+                assigned += extra_maps
+            elif not assigned:
+                raise RemixError(f"Remix rejected the texture update: {err}")
+            else:
+                self.log_warning(f"Remix rejected the anisotropy/subsurface maps: {err}")
+                for pbr in extra_maps:
+                    failed[pbr] = f"the material doesn't accept it ({err})"
 
         saved, save_err = self.remix_api.save_layer(preflight.get("edit_target") or link["material_prim"])
         if not saved:
             self.log_warning(f"Layer save failed: {save_err}")
         if progress_callback: progress_callback.emit(100)
-        return {"material_prim": link["material_prim"], "pushed": sorted(ingested, key=_PUSH_ORDER.index),
-                "failed": failed, "saved": saved, "save_error": save_err}
+        return {"material_prim": link["material_prim"], "pushed": sorted(assigned, key=_PUSH_ORDER.index),
+                "failed": failed, "saved": saved, "save_error": save_err,
+                "normal_format": options["normal_format"]}
 
     def _restore_aspect_ratio(self, exported, original_size, preflight, status_callback=None):
         orig_w, orig_h = original_size or (None, None)
@@ -1322,9 +1463,13 @@ class RemixConnectorPlugin(QObject):
             orig_w, orig_h = 0, 0
         if not (orig_w and orig_h):
             # Older links have no stored size: read it from the material's current albedo.
+            project_dir = (preflight.get("project") or {}).get("project_dir") or ""
             for usd_attr, path in preflight.get("textures") or []:
                 if REMIX_ATTR_SUFFIX_TO_PBR_MAP.get(str(usd_attr).split(":")[-1].lower()) == "albedo" and path:
-                    orig_w, orig_h = read_image_size(str(path))
+                    path = str(path)
+                    if not os.path.isabs(path) and project_dir:
+                        path = os.path.join(project_dir, path)
+                    orig_w, orig_h = read_image_size(os.path.normpath(path))
                     break
         if not (orig_w and orig_h):
             return
@@ -1339,38 +1484,44 @@ class RemixConnectorPlugin(QObject):
                 return
             if status_callback: status_callback.emit(f"Resizing {pbr} to {target[0]}x{target[1]}...")
             try:
-                self.texture_processor.resize_png(texconv, path, target[0], target[1])
+                self.texture_processor.resize_image(texconv, path, target[0], target[1])
                 self.log_info(f"Resized {pbr} to {target[0]}x{target[1]} to match the original {orig_w}x{orig_h}.")
             except Exception as e:
                 self.log_warning(f"Failed to resize {os.path.basename(path)}: {e}")
 
-    def _rename_for_force_push(self, exported, link, remix_out_dir):
-        """Copy exports to a file root that doesn't collide with earlier ingests."""
-        try:
-            output_subfolder = self.settings.get("remix_output_subfolder", "Textures/PainterConnector_Ingested").strip("/\\")
-            ingest_dir_abs = os.path.normpath(os.path.join(remix_out_dir, output_subfolder))
-            desired_root = link.get("material_hash") or "ForcePush"
-            forced_root = self.texture_processor.choose_non_overwriting_root(desired_root, ingest_dir_abs)
-            if not forced_root or forced_root == desired_root:
-                return exported
-            self.log_debug(f"ForcePush root chosen: desired={desired_root} forced={forced_root} ingestDir={ingest_dir_abs}")
-            temp_root = os.path.dirname(next(iter(exported.values())))
-            renamed = {}
-            for pbr, path in exported.items():
-                new_path, err = self.texture_processor.copy_texture_with_forced_root(
-                    path, f"{forced_root}_{EXPORT_FILE_SUFFIX.get(pbr, pbr)}", pbr, temp_root)
-                if new_path:
-                    renamed[pbr] = new_path
-                else:
-                    self.log_warning(err or f"ForcePush rename failed for {pbr}")
-            return renamed or exported
-        except Exception as e:
-            self.log_warning(f"Force Push rename step failed (continuing without rename): {e}")
+    def _rename_for_force_push(self, exported, link, remix_out_dir, output_subfolder, failed):
+        """Copy exports to a file root that doesn't collide with earlier ingests.
+
+        A map that can't be copied is reported in ``failed`` rather than pushed
+        under its old name, which could overwrite an earlier ingest.
+        """
+        if not exported:
             return exported
+        ingest_dir_abs = os.path.normpath(os.path.join(remix_out_dir, str(output_subfolder).strip("/\\")))
+        desired_root = link.get("material_hash") or "ForcePush"
+        try:
+            forced_root = self.texture_processor.choose_non_overwriting_root(desired_root, ingest_dir_abs)
+        except Exception as e:
+            raise RemixError(f"Force Push couldn't pick new file names: {e}")
+        if not forced_root or forced_root == desired_root:
+            return exported
+        self.log_debug(f"ForcePush root chosen: desired={desired_root} forced={forced_root} ingestDir={ingest_dir_abs}")
+        temp_root = os.path.dirname(next(iter(exported.values())))
+        renamed = {}
+        for pbr, path in exported.items():
+            new_path, err = self.texture_processor.copy_texture_with_forced_root(
+                path, f"{forced_root}_{EXPORT_FILE_SUFFIX.get(pbr, pbr)}", pbr, temp_root)
+            if new_path:
+                renamed[pbr] = new_path
+            else:
+                failed[pbr] = err or "couldn't copy it under a new file name"
+        return renamed
 
     def _push_done(self, summary, notes):
         material_name = summary["material_prim"].rsplit("/", 1)[-1]
-        parts = [f"Pushed {', '.join(summary['pushed'])} to {material_name}."]
+        normal_name = NORMAL_FORMAT_NAMES.get(summary.get("normal_format"), "")
+        pushed = [f"normal ({normal_name})" if pbr == "normal" and normal_name else pbr for pbr in summary["pushed"]]
+        parts = [f"Pushed {', '.join(pushed)} to {material_name}."]
         if summary["failed"]:
             parts.append("Failed: " + "; ".join(f"{k} ({v})" for k, v in summary["failed"].items()) + ".")
         if not summary["saved"]:
@@ -1396,6 +1547,34 @@ class RemixConnectorPlugin(QObject):
         self._start_worker(_select, on_result=lambda prim: self._finish_operation(f"Selected {prim.rsplit('/', 1)[-1]} in RTX Remix."),
                            title="Show in Remix", show_progress=False)
 
+    # --- Channels ---
+    def handle_add_channels(self):
+        """Add the Painter channel of every map switched on in Settings that the
+        active texture set lacks, so the extra Remix maps can be painted."""
+        if not self.painter_controller.is_project_open():
+            return self.display_message("Open a Painter project first.", level="notice")
+        if self._operation:
+            return self.display_message(f"{self._operation} is still running. Try again when it finishes.", level="notice")
+        stack = self.painter_controller.active_stack()
+        if stack is None:
+            return self.display_message("The project has no texture set.", level="notice")
+        maps = enabled_maps(self.settings)
+        present = self.painter_controller.present_pbr_types(stack)
+        wanted = [k for k in (*MAP_KEYS, OPACITY) if k in maps and k not in present]
+        if OPACITY in wanted and "albedo" not in maps:
+            wanted.remove(OPACITY)
+        if not wanted:
+            return self.display_message("The texture set already has a channel for every map switched on in "
+                                        "Settings > Texture Maps.", level="notice")
+        added = [k for k in wanted if self.painter_controller.ensure_channel(stack, k)]
+        failed = [k for k in wanted if k not in added]
+        names = lambda keys: ", ".join(MAPS_BY_KEY[k].painter_label if k in MAPS_BY_KEY else "Opacity" for k in keys)
+        message = f"Added channels: {names(added)}." if added else "No channels were added."
+        if failed:
+            message += f" Couldn't add: {names(failed)} (see the log)."
+        self._emit_state()
+        self.display_message(message, level="warning" if failed else "notice")
+
     # --- Settings / diagnostics / about ---
     def handle_settings(self):
         def _test_connection(candidate_settings):
@@ -1414,20 +1593,19 @@ class RemixConnectorPlugin(QObject):
                     except Exception:
                         pass
 
+        # Every change is saved as it happens (update_settings), so closing needs no OK.
         dialog = create_settings_dialog_instance(
-            self.settings,
+            self,
             self._get_ui_parent(),
             test_connection_fn=_test_connection,
             log_file_path=self._log_file_path,
+            add_channels_fn=self.handle_add_channels,
         )
-
-        if dialog.exec():
-            self.settings = sanitize_settings(dialog.get_settings(), PLUGIN_DIR)
-            self.save_settings()
-            self.display_message("Settings saved.", level="status")
-            self._connection = {"ok": None, "message": "Checking..."}
-            self._emit_state()
-            self.refresh_connection()
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()  # parented to Painter's main window; don't keep one per opening
+        self._emit_state()
 
     def _diagnostics_remix(self, progress_callback=None, status_callback=None):
         if status_callback:
@@ -1467,7 +1645,9 @@ class RemixConnectorPlugin(QObject):
             lines.append(f"Pillow: UNAVAILABLE ({e}) - normal maps can't be imported")
         lines += [
             f"Plugin dir: {PLUGIN_DIR}",
-            f"Settings file: {SETTINGS_FILE_PATH}",
+            f"Settings file: {self.store.settings_path}",
+            f"Presets file: {self.store.presets_path} ({len(self.store.presets)} preset(s), "
+            f"active: {self.store.active_preset or 'none'}{', modified' if self.store.is_modified() else ''})",
             f"Log file: {self._log_file_path}",
             "",
             "RTX Remix:",
@@ -1494,7 +1674,8 @@ class RemixConnectorPlugin(QObject):
             f"  Blender: {s.get('blender_executable_path') or '(not set)'} ({_path_status(s.get('blender_executable_path'))})",
             "",
             "Key settings:",
-            f"  normal_map_format: {s.get('normal_map_format')}",
+            f"  normal_map_format (new projects): {s.get('normal_map_format')}",
+            f"  texture maps on: {', '.join(k for k in (*MAP_KEYS, OPACITY) if k in enabled_maps(s))}",
             f"  project_texture_resolution: {s.get('project_texture_resolution')}",
             f"  auto_import_textures_on_pull: {s.get('auto_import_textures_on_pull')}",
             f"  use_simple_tiling_mesh_on_pull: {s.get('use_simple_tiling_mesh_on_pull')}",
@@ -1511,6 +1692,10 @@ class RemixConnectorPlugin(QObject):
                 link = self.read_link()
                 lines.append("Painter project:")
                 lines.append(f"  File: {substance_painter.project.file_path() or '(unsaved)'}")
+                fmt = self.project_normal_format(link or {})
+                source = "set at Pull" if (link or {}).get("normal_format") in NORMAL_MAP_FORMATS else "from settings"
+                lines.append(f"  Normal map format: {NORMAL_FORMAT_NAMES[fmt]} ({source}); "
+                             f"pushes ingest normals as {'NORMAL_DX' if fmt == 'directx' else 'NORMAL_OGL'}")
                 if link:
                     lines.append(f"  Linked material: {link['material_prim']}")
                     lines.append(f"  Material hash: {link['material_hash']}")
@@ -1534,7 +1719,10 @@ class RemixConnectorPlugin(QObject):
         def _show(remix_info):
             text = self._build_diagnostics_text(remix_info)
             dlg = DiagnosticsDialog(text, self._get_ui_parent(), log_file_path=self._log_file_path)
-            dlg.exec_()
+            try:
+                dlg.exec_()
+            finally:
+                dlg.deleteLater()
 
         self._start_worker(self._diagnostics_remix, on_result=_show, title="Diagnostics", show_progress=False, operational=False)
 
@@ -1628,6 +1816,7 @@ def handle_push_to_remix(): _safe_call('handle_push_to_remix')
 def handle_relink_and_push_to_remix(): _safe_call('handle_relink_and_push_to_remix')
 def handle_link_to_selection(): _safe_call('handle_link_to_selection')
 def handle_select_in_remix(): _safe_call('handle_select_in_remix')
+def handle_add_channels(): _safe_call('handle_add_channels')
 def handle_settings(): _safe_call('handle_settings')
 def handle_diagnostics(): _safe_call('handle_diagnostics')
 def handle_open_log_folder(): _safe_call('handle_open_log_folder')

@@ -20,9 +20,9 @@ remix_panel = None
 # file but keeps submodules cached, so they are reloaded explicitly (leaves
 # first, core last) to pick up edits without restarting Painter.
 _SUBMODULES = (
-    "plugin_info", "qt_utils", "settings_schema", "remix_api", "texture_processor",
-    "painter_controller", "async_utils", "settings_dialog", "diagnostics_dialog",
-    "ui_panel", "core",
+    "plugin_info", "qt_utils", "pbr_maps", "settings_schema", "settings_store", "remix_api",
+    "texture_processor", "painter_controller", "async_utils", "settings_dialog",
+    "diagnostics_dialog", "ui_panel", "core",
 )
 
 # (label, core handler, tooltip); None draws a separator.
@@ -35,6 +35,7 @@ _MENU = (
     None,
     ("Link to Selected Remix Material", "handle_link_to_selection", "Link this project to the material selected in Remix."),
     ("Show Linked Material in Remix", "handle_select_in_remix", "Select the linked material in RTX Remix."),
+    ("Add Remix Channels to Texture Set", "handle_add_channels", "Add the channels for every Remix map switched on in Settings (anisotropy, subsurface, ...)."),
     None,
     ("Settings...", "handle_settings", None),
     ("Diagnostics...", "handle_diagnostics", None),

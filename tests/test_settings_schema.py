@@ -1,22 +1,12 @@
 import os
-import sys
 import json
 import tempfile
 import unittest
 from unittest.mock import patch
 
-# Ensure the parent directory is in the path to import settings_schema
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from ._isolated import import_plugin_module
 
-# Handle relative import inside settings_schema by mocking the package
-import plugin_info
-import importlib.util
-spec = importlib.util.spec_from_file_location("remix_plugin.settings_schema", os.path.join(os.path.dirname(os.path.dirname(__file__)), "settings_schema.py"))
-settings_schema = importlib.util.module_from_spec(spec)
-sys.modules["remix_plugin"] = sys.modules[__name__] # dummy package
-sys.modules["remix_plugin.plugin_info"] = plugin_info
-sys.modules["remix_plugin.settings_schema"] = settings_schema
-spec.loader.exec_module(settings_schema)
+settings_schema = import_plugin_module("settings_schema")
 
 _coerce_bool = settings_schema._coerce_bool
 _coerce_float = settings_schema._coerce_float
@@ -163,9 +153,41 @@ class TestSettingsSchema(unittest.TestCase):
         found = [r"C:\Program Files\Blender Foundation\Blender 4.4\blender.exe",
                  r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
                  r"C:\Program Files\Blender Foundation\Blender 5.10\blender.exe"]
-        with patch.object(settings_schema.glob, "glob", return_value=found), \
-                patch.object(settings_schema.os.path, "isfile", return_value=True):
-            self.assertTrue(settings_schema._detect_blender_path().endswith(r"Blender 5.10\blender.exe"))
+        settings_schema._detect_blender_path.cache_clear()
+        try:
+            with patch.object(settings_schema.glob, "glob", return_value=found), \
+                    patch.object(settings_schema.os.path, "isfile", return_value=True):
+                self.assertTrue(settings_schema._detect_blender_path().endswith(r"Blender 5.10\blender.exe"))
+        finally:
+            settings_schema._detect_blender_path.cache_clear()
+
+    def test_texture_maps_are_complete_bools(self):
+        maps = sanitize_settings({"texture_maps": {"anisotropy": "false", "opacity": 0, "bogus": True}}, "dummy_dir")["texture_maps"]
+        self.assertEqual(set(maps), set(settings_schema.TOGGLE_KEYS))
+        self.assertFalse(maps["anisotropy"])
+        self.assertFalse(maps["opacity"])
+        self.assertTrue(maps["thickness"])  # missing keys default to on
+        self.assertEqual(settings_schema.enabled_maps({"texture_maps": {"albedo": False}}),
+                         set(settings_schema.TOGGLE_KEYS) - {"albedo"})
+        # Settings from before the maps existed still push everything.
+        self.assertEqual(settings_schema.enabled_maps({}), set(settings_schema.TOGGLE_KEYS))
+
+    def test_poll_timeout_is_clamped(self):
+        self.assertEqual(sanitize_settings({"poll_timeout": 0}, "dummy_dir")["poll_timeout"], 0.5)
+        self.assertEqual(sanitize_settings({"poll_timeout": "9999"}, "dummy_dir")["poll_timeout"], 300.0)
+
+    def test_preset_values_exclude_machine_paths(self):
+        settings = sanitize_settings({"api_base_url": "http://x:1", "normal_map_format": "directx"}, "dummy_dir")
+        values = settings_schema.preset_values(settings)
+        self.assertEqual(values["normal_map_format"], "directx")
+        for key in ("api_base_url", "texconv_path", "blender_executable_path", "painter_export_path", "log_level"):
+            self.assertNotIn(key, values)
+        values["texture_maps"]["albedo"] = False  # a copy, not the live settings
+        self.assertTrue(settings["texture_maps"]["albedo"])
+
+    def test_user_config_dir_is_outside_the_plugin(self):
+        with patch.dict(os.environ, {"APPDATA": r"C:\Users\me\AppData\Roaming"}):
+            self.assertEqual(settings_schema.user_config_dir(), os.path.join(r"C:\Users\me\AppData\Roaming", "Substance2Remix"))
 
     def test_atomic_write_json(self):
         data = {"key": "value"}

@@ -1,25 +1,39 @@
 import os
 from typing import Callable, Dict, Optional, Tuple
 
+from .pbr_maps import MAPS_BY_KEY, PBR_MAPS, OPACITY
 from .plugin_info import PLUGIN_NAME, PLUGIN_VERSION
 from .qt_utils import QtWidgets, QtCore, QtGui, QT_AVAILABLE
-from .settings_schema import sanitize_settings, TEXTURE_RESOLUTIONS, NORMAL_MAP_FORMATS, EXPORT_FORMATS
+from .settings_schema import TEXTURE_RESOLUTIONS, NORMAL_MAP_FORMATS, EXPORT_FORMATS, POLL_TIMEOUT_RANGE
 
 TestConnectionFn = Callable[[Dict], Tuple[bool, str]]
 
 _NORMAL_FORMAT_LABELS = {"opengl": "OpenGL (Painter default)", "directx": "DirectX"}
+_NO_PRESET = "(no preset)"
+# Coalesces bursts of edits (spin box arrows, typing) into one save.
+_SAVE_DELAY_MS = 300
 
 
 class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
+    """Settings with autosave and named presets.
+
+    ``controller`` owns the settings (RemixConnectorPlugin in Painter). It
+    needs ``settings``, ``update_settings(values)``, ``reset_settings()``,
+    ``preset_names()``, ``active_preset()``, ``preset_modified()``,
+    ``save_preset(name)``, ``apply_preset(name)`` and ``delete_preset(name)``;
+    the settings methods return the new settings dict.
+    """
+
     def __init__(
         self,
-        current_settings: Dict,
+        controller,
         parent=None,
         test_connection_fn: Optional[TestConnectionFn] = None,
         log_file_path: Optional[str] = None,
+        add_channels_fn: Optional[Callable[[], None]] = None,
     ):
+        self._controller = controller
         if not QT_AVAILABLE:
-            self._settings = dict(current_settings or {})
             return
 
         super().__init__(parent)
@@ -27,38 +41,150 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         self.setMinimumWidth(720)
 
         self._test_connection_fn = test_connection_fn
+        self._add_channels_fn = add_channels_fn
         self._log_file_path = log_file_path or ""
+        self._settings = dict(controller.settings)
+        self._loading = False
 
-        # Fill defaults + normalize types for UI.
-        self._plugin_dir = os.path.dirname(os.path.abspath(__file__))
-        self._settings = sanitize_settings(current_settings or {}, self._plugin_dir)
+        self._save_timer = QtCore.QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(_SAVE_DELAY_MS)
+        self._save_timer.timeout.connect(self._commit)
 
         root = QtWidgets.QVBoxLayout(self)
 
         header = QtWidgets.QLabel(f"<b>{PLUGIN_NAME}</b> <span style='color:#888'>v{PLUGIN_VERSION}</span>")
         root.addWidget(header)
+        root.addLayout(self._build_preset_row())
 
         self.tabs = QtWidgets.QTabWidget(self)
         root.addWidget(self.tabs, 1)
 
         self._build_tab_connection()
         self._build_tab_project()
+        self._build_tab_maps()
         self._build_tab_export()
         self._build_tab_paths()
         self._build_tab_advanced()
 
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.RestoreDefaults | QtWidgets.QDialogButtonBox.Cancel | QtWidgets.QDialogButtonBox.Ok
-        )
-        root.addWidget(buttons)
-        self.reset_btn = buttons.button(QtWidgets.QDialogButtonBox.RestoreDefaults)
-        self.ok_btn = buttons.button(QtWidgets.QDialogButtonBox.Ok)
-        self.cancel_btn = buttons.button(QtWidgets.QDialogButtonBox.Cancel)
+        footer = QtWidgets.QHBoxLayout()
+        self.reset_btn = QtWidgets.QPushButton("Restore Defaults")
+        self.reset_btn.setToolTip("Reset every setting to its default. Saved presets are kept.")
+        self.saved_label = QtWidgets.QLabel("Changes are saved automatically.")
+        self.saved_label.setStyleSheet("color:#888")
+        self.close_btn = QtWidgets.QPushButton("Close")
+        self.close_btn.setDefault(True)
+        footer.addWidget(self.reset_btn)
+        footer.addStretch(1)
+        footer.addWidget(self.saved_label)
+        footer.addSpacing(12)
+        footer.addWidget(self.close_btn)
+        root.addLayout(footer)
         self.reset_btn.clicked.connect(self._reset_defaults)
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
+        self.close_btn.clicked.connect(self.accept)
 
         self._load_fields(self._settings)
+        self._refresh_presets()
+
+    # --- presets ---
+    def _build_preset_row(self):
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("Preset"))
+        self.preset_combo = QtWidgets.QComboBox()
+        self.preset_combo.setMinimumWidth(220)
+        self.preset_combo.setToolTip("Load a saved preset. Presets store workflow settings, not machine paths.")
+        self.preset_save_btn = QtWidgets.QPushButton("Save")
+        self.preset_save_btn.setToolTip("Update the selected preset with the current settings.")
+        self.preset_save_as_btn = QtWidgets.QPushButton("Save As...")
+        self.preset_save_as_btn.setToolTip("Save the current settings as a new preset.")
+        self.preset_delete_btn = QtWidgets.QPushButton("Delete")
+        self.preset_state = QtWidgets.QLabel("")
+        self.preset_state.setStyleSheet("color:#d9a441")
+        row.addWidget(self.preset_combo, 1)
+        row.addWidget(self.preset_save_btn)
+        row.addWidget(self.preset_save_as_btn)
+        row.addWidget(self.preset_delete_btn)
+        row.addWidget(self.preset_state)
+        self.preset_combo.activated.connect(self._on_preset_chosen)
+        self.preset_save_btn.clicked.connect(self._save_preset)
+        self.preset_save_as_btn.clicked.connect(self._save_preset_as)
+        self.preset_delete_btn.clicked.connect(self._delete_preset)
+        return row
+
+    def _refresh_presets(self):
+        active = self._controller.active_preset()
+        modified = self._controller.preset_modified()
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        self.preset_combo.addItem(_NO_PRESET, "")
+        for name in self._controller.preset_names():
+            self.preset_combo.addItem(name, name)
+        idx = self.preset_combo.findData(active)
+        self.preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.preset_combo.blockSignals(False)
+        self.preset_save_btn.setEnabled(bool(active) and modified)
+        self.preset_delete_btn.setEnabled(bool(active))
+        self.preset_state.setText("Unsaved changes" if modified else "")
+
+    def _confirm(self, title, text):
+        Box = QtWidgets.QMessageBox
+        return Box.question(self, f"{PLUGIN_NAME} - {title}", text, Box.Yes | Box.No, Box.No) == Box.Yes
+
+    def _on_preset_chosen(self, index):
+        self._flush()
+        name = self.preset_combo.itemData(index) or ""
+        active = self._controller.active_preset()
+        if name == active:
+            return
+        if not name:
+            # Detach from the preset; the settings themselves don't change.
+            self._settings = self._controller.update_settings({"active_preset": ""})
+            self._refresh_presets()
+            return
+        if self._controller.preset_modified():
+            question = f"Your settings have changes that aren't saved in '{active}'. Load '{name}' anyway?"
+        elif not active:
+            question = f"Load preset '{name}'? It replaces your current workflow settings."
+        else:
+            question = None
+        if question and not self._confirm("Load Preset", question):
+            self._refresh_presets()
+            return
+        self._settings = self._controller.apply_preset(name)
+        self._load_fields(self._settings)
+        self._refresh_presets()
+        self._show_saved(f"Loaded preset '{name}'.")
+
+    def _save_preset(self):
+        name = self._controller.active_preset()
+        if not name:
+            return self._save_preset_as()
+        self._flush()
+        self._settings = self._controller.save_preset(name)
+        self._refresh_presets()
+        self._show_saved(f"Preset '{name}' updated.")
+
+    def _save_preset_as(self):
+        self._flush()
+        suggested = self._controller.active_preset() or "My Preset"
+        name, ok = QtWidgets.QInputDialog.getText(self, f"{PLUGIN_NAME} - Save Preset", "Preset name:", text=suggested)
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        if name in self._controller.preset_names() and name != self._controller.active_preset():
+            if not self._confirm("Save Preset", f"A preset named '{name}' already exists. Replace it?"):
+                return
+        self._settings = self._controller.save_preset(name)
+        self._refresh_presets()
+        self._show_saved(f"Saved preset '{name}'.")
+
+    def _delete_preset(self):
+        name = self._controller.active_preset()
+        if not name or not self._confirm("Delete Preset", f"Delete the preset '{name}'? Your current settings stay as they are."):
+            return
+        self._settings = self._controller.delete_preset(name)
+        self._refresh_presets()
+        self._show_saved(f"Deleted preset '{name}'.")
 
     # --- tab builders ---
     def _build_tab_connection(self):
@@ -70,7 +196,7 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         self.api_base_url.setToolTip("RTX Remix Toolkit REST API address. The Toolkit serves it on port 8011 by default.")
 
         self.poll_timeout = QtWidgets.QDoubleSpinBox()
-        self.poll_timeout.setRange(0.2, 300.0)
+        self.poll_timeout.setRange(*POLL_TIMEOUT_RANGE)
         self.poll_timeout.setDecimals(1)
         self.poll_timeout.setSingleStep(0.5)
         self.poll_timeout.setSuffix(" s")
@@ -89,6 +215,7 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         layout.addRow("", test_row)
         self.test_btn.clicked.connect(self._test_connection)
 
+        self._watch(self.api_base_url, self.poll_timeout)
         self.tabs.addTab(w, "Connection")
 
     def _build_tab_project(self):
@@ -109,8 +236,10 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         self.normal_format = QtWidgets.QComboBox()
         for fmt in NORMAL_MAP_FORMATS:
             self.normal_format.addItem(_NORMAL_FORMAT_LABELS[fmt], fmt)
-        self.normal_format.setToolTip("Normal map convention used for new projects, imports and pushes. "
-                                      "Remix converts either one to its octahedral format on ingest.")
+        self.normal_format.setToolTip(
+            "Normal map convention for projects created by Pull. A project keeps the convention it was "
+            "created with: pushes export its normal map in that convention and tell Remix which one it is, "
+            "and imports convert Remix normals to it.")
         layout.addRow("Normal Map Format", self.normal_format)
 
         self.import_template = QtWidgets.QLineEdit()
@@ -131,7 +260,65 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
                                     "textures only line up after you replace that mesh in Remix.")
         layout.addRow(self.auto_unwrap)
 
+        self._watch(self.auto_import, self.resolution, self.normal_format, self.import_template,
+                    self.use_simple_mesh, self.simple_mesh_path, self.auto_unwrap)
         self.tabs.addTab(w, "Project")
+
+    def _build_tab_maps(self):
+        w = QtWidgets.QWidget(self)
+        layout = QtWidgets.QVBoxLayout(w)
+        intro = QtWidgets.QLabel(
+            "The RTX Remix texture maps that Push and Import include. A map is pushed only when its "
+            "Painter channel exists in the texture set; Import adds missing channels.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self.map_checks = {}
+
+        def add_group(title, keys):
+            box = QtWidgets.QGroupBox(title)
+            grid = QtWidgets.QGridLayout(box)
+            grid.setColumnStretch(1, 1)
+            for row, key in enumerate(keys):
+                if key == OPACITY:
+                    label, channel, indent = "Opacity (in the albedo alpha)", "Opacity", 20
+                else:
+                    m = MAPS_BY_KEY[key]
+                    label, channel, indent = m.label, m.painter_label, 0
+                check = QtWidgets.QCheckBox(label)
+                check.setStyleSheet(f"margin-left:{indent}px" if indent else "")
+                source = QtWidgets.QLabel(channel)
+                source.setStyleSheet("color:#888")
+                grid.addWidget(check, row, 0)
+                grid.addWidget(source, row, 1)
+                self.map_checks[key] = check
+            layout.addWidget(box)
+
+        standard = [m.key for m in PBR_MAPS if not m.dds]
+        standard.insert(standard.index("albedo") + 1, OPACITY)
+        add_group("Standard maps", standard)
+        add_group("AperturePBR extras (anisotropy and subsurface)", [m.key for m in PBR_MAPS if m.dds])
+
+        note = QtWidgets.QLabel(
+            "Anisotropy: Painter's level maps onto Remix's positive range (0 = isotropic). "
+            "Subsurface thickness values pass through unchanged, in Remix's units.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#888")
+        layout.addWidget(note)
+
+        if self._add_channels_fn is not None:
+            row = QtWidgets.QHBoxLayout()
+            self.add_channels_btn = QtWidgets.QPushButton("Add Checked Channels to the Active Texture Set")
+            self.add_channels_btn.setToolTip("Adds the Painter channel of every checked map the texture set doesn't have yet.")
+            self.add_channels_btn.clicked.connect(self._add_channels)
+            row.addWidget(self.add_channels_btn)
+            row.addStretch(1)
+            layout.addLayout(row)
+        layout.addStretch(1)
+
+        self.map_checks["albedo"].toggled.connect(lambda on: self.map_checks[OPACITY].setEnabled(on))
+        self._watch(*self.map_checks.values())
+        self.tabs.addTab(w, "Texture Maps")
 
     def _build_tab_export(self):
         w = QtWidgets.QWidget(self)
@@ -155,6 +342,7 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         self.export_path.setToolTip("Where Painter exports textures before Remix ingests them.")
         layout.addRow("Export Folder", self._with_browse(self.export_path, mode="dir", title="Select export folder"))
 
+        self._watch(self.export_format, self.restore_aspect, self.remix_output_subfolder, self.export_path)
         self.tabs.addTab(w, "Export")
 
     def _build_tab_paths(self):
@@ -182,6 +370,7 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         layout.addRow("Plugin Log", log_row)
         self.log_open_btn.clicked.connect(self._open_log_folder)
 
+        self._watch(self.texconv_path, self.blender_exe, self.blender_script)
         self.tabs.addTab(w, "Paths")
 
     def _build_tab_advanced(self):
@@ -216,9 +405,23 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         uv_layout.addRow(self.uv_stretch)
         layout.addRow(uv_box)
 
+        self._watch(self.log_level, self.uv_angle, self.uv_margin, self.uv_area, self.uv_stretch)
         self.tabs.addTab(w, "Advanced")
 
     # --- helpers ---
+    def _watch(self, *widgets):
+        """Save when any of ``widgets`` changes. Text fields save when editing
+        finishes, so a half-typed path or URL is never written."""
+        for widget in widgets:
+            if isinstance(widget, QtWidgets.QLineEdit):
+                widget.editingFinished.connect(self._changed)
+            elif isinstance(widget, QtWidgets.QAbstractButton):
+                widget.toggled.connect(self._changed)
+            elif isinstance(widget, QtWidgets.QComboBox):
+                widget.currentIndexChanged.connect(self._changed)
+            elif isinstance(widget, QtWidgets.QAbstractSpinBox):
+                widget.valueChanged.connect(self._changed)
+
     def _with_browse(self, line_edit: QtWidgets.QLineEdit, mode: str, title: str, filter: str = ""):
         row = QtWidgets.QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -230,12 +433,11 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
             try:
                 if mode == "dir":
                     path = QtWidgets.QFileDialog.getExistingDirectory(self, title, line_edit.text() or "")
-                    if path:
-                        line_edit.setText(path)
                 else:
                     path, _ = QtWidgets.QFileDialog.getOpenFileName(self, title, line_edit.text() or "", filter)
-                    if path:
-                        line_edit.setText(path)
+                if path:
+                    line_edit.setText(path)
+                    self._changed()
             except Exception:
                 pass
 
@@ -265,60 +467,92 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
             combo.setCurrentIndex(idx)
 
     def _load_fields(self, s: Dict):
-        self.api_base_url.setText(s.get("api_base_url", ""))
-        self.poll_timeout.setValue(float(s.get("poll_timeout", 60.0)))
+        self._loading = True
+        try:
+            self.api_base_url.setText(s.get("api_base_url", ""))
+            self.poll_timeout.setValue(float(s.get("poll_timeout", 60.0)))
 
-        self.auto_import.setChecked(bool(s.get("auto_import_textures_on_pull", True)))
-        self._select_data(self.resolution, int(s.get("project_texture_resolution", 2048)))
-        self._select_data(self.normal_format, s.get("normal_map_format", "opengl"))
-        self.import_template.setText(s.get("painter_import_template_path", ""))
-        self.use_simple_mesh.setChecked(bool(s.get("use_simple_tiling_mesh_on_pull", False)))
-        self.simple_mesh_path.setText(s.get("simple_tiling_mesh_path", ""))
-        self.auto_unwrap.setChecked(bool(s.get("auto_unwrap_with_blender_on_pull", False)))
+            self.auto_import.setChecked(bool(s.get("auto_import_textures_on_pull", True)))
+            self._select_data(self.resolution, int(s.get("project_texture_resolution", 2048)))
+            self._select_data(self.normal_format, s.get("normal_map_format", "opengl"))
+            self.import_template.setText(s.get("painter_import_template_path", ""))
+            self.use_simple_mesh.setChecked(bool(s.get("use_simple_tiling_mesh_on_pull", False)))
+            self.simple_mesh_path.setText(s.get("simple_tiling_mesh_path", ""))
+            self.auto_unwrap.setChecked(bool(s.get("auto_unwrap_with_blender_on_pull", False)))
 
-        self._select_text(self.export_format, s.get("export_file_format", "png"))
-        self.restore_aspect.setChecked(bool(s.get("restore_original_aspect_ratio_on_export", True)))
-        self.remix_output_subfolder.setText(s.get("remix_output_subfolder", ""))
-        self.export_path.setText(s.get("painter_export_path", ""))
+            maps = s.get("texture_maps") or {}
+            for key, check in self.map_checks.items():
+                check.setChecked(bool(maps.get(key, True)))
+            self.map_checks[OPACITY].setEnabled(self.map_checks["albedo"].isChecked())
 
-        self.texconv_path.setText(s.get("texconv_path", ""))
-        self.blender_exe.setText(s.get("blender_executable_path", ""))
-        self.blender_script.setText(s.get("blender_unwrap_script_path", ""))
+            self._select_text(self.export_format, s.get("export_file_format", "png"))
+            self.restore_aspect.setChecked(bool(s.get("restore_original_aspect_ratio_on_export", True)))
+            self.remix_output_subfolder.setText(s.get("remix_output_subfolder", ""))
+            self.export_path.setText(s.get("painter_export_path", ""))
 
-        self._select_text(self.log_level, s.get("log_level", "info"))
-        self.uv_angle.setValue(float(s.get("blender_smart_uv_angle_limit", 66.0)))
-        self.uv_margin.setValue(float(s.get("blender_smart_uv_island_margin", 0.003)))
-        self.uv_area.setValue(float(s.get("blender_smart_uv_area_weight", 0.0)))
-        self.uv_stretch.setChecked(bool(s.get("blender_smart_uv_stretch_to_bounds", False)))
+            self.texconv_path.setText(s.get("texconv_path", ""))
+            self.blender_exe.setText(s.get("blender_executable_path", ""))
+            self.blender_script.setText(s.get("blender_unwrap_script_path", ""))
+
+            self._select_text(self.log_level, s.get("log_level", "info"))
+            self.uv_angle.setValue(float(s.get("blender_smart_uv_angle_limit", 66.0)))
+            self.uv_margin.setValue(float(s.get("blender_smart_uv_island_margin", 0.003)))
+            self.uv_area.setValue(float(s.get("blender_smart_uv_area_weight", 0.0)))
+            self.uv_stretch.setChecked(bool(s.get("blender_smart_uv_stretch_to_bounds", False)))
+        finally:
+            self._loading = False
 
     def _gather(self) -> Dict:
-        s = dict(self._settings)
-        s["api_base_url"] = self.api_base_url.text().strip()
-        s["poll_timeout"] = float(self.poll_timeout.value())
+        """The values this dialog edits (merged into the settings on save)."""
+        return {
+            "api_base_url": self.api_base_url.text().strip(),
+            "poll_timeout": float(self.poll_timeout.value()),
 
-        s["auto_import_textures_on_pull"] = bool(self.auto_import.isChecked())
-        s["project_texture_resolution"] = int(self.resolution.currentData())
-        s["normal_map_format"] = self.normal_format.currentData()
-        s["painter_import_template_path"] = self.import_template.text().strip()
-        s["use_simple_tiling_mesh_on_pull"] = bool(self.use_simple_mesh.isChecked())
-        s["simple_tiling_mesh_path"] = self.simple_mesh_path.text().strip()
-        s["auto_unwrap_with_blender_on_pull"] = bool(self.auto_unwrap.isChecked())
+            "auto_import_textures_on_pull": bool(self.auto_import.isChecked()),
+            "project_texture_resolution": int(self.resolution.currentData()),
+            "normal_map_format": self.normal_format.currentData(),
+            "painter_import_template_path": self.import_template.text().strip(),
+            "use_simple_tiling_mesh_on_pull": bool(self.use_simple_mesh.isChecked()),
+            "simple_tiling_mesh_path": self.simple_mesh_path.text().strip(),
+            "auto_unwrap_with_blender_on_pull": bool(self.auto_unwrap.isChecked()),
 
-        s["export_file_format"] = self.export_format.currentText().strip().lower()
-        s["restore_original_aspect_ratio_on_export"] = bool(self.restore_aspect.isChecked())
-        s["remix_output_subfolder"] = self.remix_output_subfolder.text().strip()
-        s["painter_export_path"] = self.export_path.text().strip()
+            "texture_maps": {key: bool(check.isChecked()) for key, check in self.map_checks.items()},
 
-        s["texconv_path"] = self.texconv_path.text().strip()
-        s["blender_executable_path"] = self.blender_exe.text().strip()
-        s["blender_unwrap_script_path"] = self.blender_script.text().strip()
+            "export_file_format": self.export_format.currentText().strip().lower(),
+            "restore_original_aspect_ratio_on_export": bool(self.restore_aspect.isChecked()),
+            "remix_output_subfolder": self.remix_output_subfolder.text().strip(),
+            "painter_export_path": self.export_path.text().strip(),
 
-        s["log_level"] = self.log_level.currentText().strip().lower()
-        s["blender_smart_uv_angle_limit"] = float(self.uv_angle.value())
-        s["blender_smart_uv_island_margin"] = float(self.uv_margin.value())
-        s["blender_smart_uv_area_weight"] = float(self.uv_area.value())
-        s["blender_smart_uv_stretch_to_bounds"] = bool(self.uv_stretch.isChecked())
-        return s
+            "texconv_path": self.texconv_path.text().strip(),
+            "blender_executable_path": self.blender_exe.text().strip(),
+            "blender_unwrap_script_path": self.blender_script.text().strip(),
+
+            "log_level": self.log_level.currentText().strip().lower(),
+            "blender_smart_uv_angle_limit": float(self.uv_angle.value()),
+            "blender_smart_uv_island_margin": float(self.uv_margin.value()),
+            "blender_smart_uv_area_weight": float(self.uv_area.value()),
+            "blender_smart_uv_stretch_to_bounds": bool(self.uv_stretch.isChecked()),
+        }
+
+    # --- autosave ---
+    def _changed(self, *_):
+        if not self._loading:
+            self._save_timer.start()
+
+    def _commit(self):
+        self._save_timer.stop()
+        self._settings = self._controller.update_settings(self._gather())
+        self._refresh_presets()
+        self._show_saved("Saved.")
+
+    def _flush(self):
+        """Save a pending (debounced) change now."""
+        if self._save_timer.isActive():
+            self._commit()
+
+    def _show_saved(self, text):
+        self.saved_label.setText(text)
+        QtCore.QTimer.singleShot(2500, lambda: self.saved_label.setText("Changes are saved automatically."))
 
     def _test_connection(self):
         if not self._test_connection_fn:
@@ -327,22 +561,33 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
         self.test_result.setText("Testing...")
         QtWidgets.QApplication.processEvents()
         try:
-            ok, msg = self._test_connection_fn(self._gather())
+            ok, msg = self._test_connection_fn({**self._settings, **self._gather()})
             self.test_result.setText(("OK: " if ok else "FAIL: ") + str(msg))
         except Exception as e:
             self.test_result.setText(f"FAIL: {e}")
 
-    def _reset_defaults(self):
-        defaults = sanitize_settings({}, self._plugin_dir)
-        # Keep keys this dialog doesn't edit (data other tools stored alongside).
-        extras = {k: v for k, v in self._settings.items() if k not in defaults}
-        self._settings = {**extras, **defaults}
-        self._load_fields(self._settings)
-        self.test_result.setText("")
+    def _add_channels(self):
+        self._flush()
+        if self._add_channels_fn is not None:
+            self._add_channels_fn()
 
-    def _accept(self):
-        self._settings = self._gather()
-        self.accept()
+    def _reset_defaults(self):
+        if not self._confirm("Restore Defaults", "Reset every setting to its default? Saved presets are kept."):
+            return
+        self._save_timer.stop()
+        self._settings = self._controller.reset_settings()
+        self._load_fields(self._settings)
+        self._refresh_presets()
+        self.test_result.setText("")
+        self._show_saved("Defaults restored.")
+
+    def done(self, result):  # noqa: D401 - Qt override
+        # Closing with the window button skips editingFinished; save what's there.
+        if not self._loading:
+            gathered = self._gather()
+            if self._save_timer.isActive() or any(self._settings.get(k) != v for k, v in gathered.items()):
+                self._commit()
+        super().done(result)
 
     def get_settings(self) -> Dict:
         return dict(self._settings)
@@ -356,9 +601,11 @@ class SettingsDialog(QtWidgets.QDialog if QT_AVAILABLE else object):
 
 
 def create_settings_dialog_instance(
-    current_settings: Dict,
+    controller,
     parent=None,
     test_connection_fn: Optional[TestConnectionFn] = None,
     log_file_path: Optional[str] = None,
+    add_channels_fn: Optional[Callable[[], None]] = None,
 ):
-    return SettingsDialog(current_settings, parent=parent, test_connection_fn=test_connection_fn, log_file_path=log_file_path)
+    return SettingsDialog(controller, parent=parent, test_connection_fn=test_connection_fn,
+                          log_file_path=log_file_path, add_channels_fn=add_channels_fn)

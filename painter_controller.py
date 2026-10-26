@@ -4,6 +4,8 @@ Every function here touches Painter state and must run on the main thread.
 """
 import math
 
+from .pbr_maps import PBR_MAPS, MAPS_BY_KEY, OPACITY
+
 try:
     import substance_painter.textureset
     import substance_painter.resource
@@ -23,16 +25,12 @@ except ImportError:
     substance_painter.layerstack = MockPainterModule()
     substance_painter.ui = MockPainterModule()
 
-# Plugin PBR type -> (ChannelType member, ChannelFormat member used when the channel is created).
-CHANNEL_SPECS = {
-    "albedo": ("BaseColor", "sRGB8"),
-    "normal": ("Normal", "RGB16F"),
-    "height": ("Height", "L16F"),
-    "roughness": ("Roughness", "L8"),
-    "metallic": ("Metallic", "L8"),
-    "emissive": ("Emissive", "sRGB8"),
-    "opacity": ("Opacity", "L8"),
-}
+# Plugin PBR type -> (ChannelType members to try, ChannelFormat used when the channel is created).
+# Painter 12 names channels after OpenPBR and keeps the older names as aliases.
+CHANNEL_SPECS = {m.key: (m.channels, m.channel_format) for m in PBR_MAPS}
+CHANNEL_SPECS[OPACITY] = (("Opacity",), "L8")
+
+USER_CHANNEL_COUNT = 32
 
 MIN_RESOLUTION = 128
 MAX_RESOLUTION = 4096
@@ -40,6 +38,11 @@ MAX_RESOLUTION = 4096
 
 def _pow2_floor(value):
     return 1 << max(0, int(math.floor(math.log2(max(1, value)))))
+
+
+def pow2_ceil(value):
+    """Smallest power of two >= ``value``, capped at Painter's maximum resolution."""
+    return min(MAX_RESOLUTION, 1 << max(0, int(math.ceil(math.log2(max(1, value))))))
 
 
 def aspect_matched_resolution(source_w, source_h, long_side):
@@ -95,17 +98,56 @@ class PainterController:
 
     # --- Texture sets / channels ---
 
-    def channel_type(self, pbr_type):
+    def channel_type(self, pbr_type, stack=None):
+        """The ChannelType that holds ``pbr_type``, or None.
+
+        Maps kept in a User channel are found by label, so they need ``stack``.
+        """
         spec = CHANNEL_SPECS.get(pbr_type)
         if not spec:
             return None
-        return getattr(substance_painter.textureset.ChannelType, spec[0], None)
+        if self._user_label(pbr_type):
+            return self._find_user_channel(stack, pbr_type) if stack is not None else None
+        channel_types = substance_painter.textureset.ChannelType
+        for name in spec[0]:
+            ct = getattr(channel_types, name, None)
+            if ct is not None:
+                return ct
+        return None
 
     def channel_format(self, pbr_type):
         spec = CHANNEL_SPECS.get(pbr_type)
         if not spec:
             return None
         return getattr(substance_painter.textureset.ChannelFormat, spec[1], None)
+
+    @staticmethod
+    def _user_label(pbr_type):
+        m = MAPS_BY_KEY.get(pbr_type)
+        return m.user_label if m else ""
+
+    def _user_channel_types(self):
+        channel_types = substance_painter.textureset.ChannelType
+        return [ct for ct in (getattr(channel_types, f"User{i}", None) for i in range(USER_CHANNEL_COUNT)) if ct is not None]
+
+    def _find_user_channel(self, stack, pbr_type):
+        """The User channel labelled for ``pbr_type`` (case-insensitive), or None."""
+        label = self._user_label(pbr_type).lower()
+        for ct in self._user_channel_types():
+            try:
+                if stack.has_channel(ct) and (stack.get_channel(ct).label() or "").strip().lower() == label:
+                    return ct
+            except Exception:
+                continue
+        return None
+
+    def _add_user_channel(self, stack, pbr_type):
+        """Add a labelled User channel in the first free slot. Returns its ChannelType."""
+        for ct in self._user_channel_types():
+            if not stack.has_channel(ct):
+                stack.add_channel(ct, self.channel_format(pbr_type), self._user_label(pbr_type))
+                return ct
+        raise RuntimeError("no free User channel")
 
     def active_stack(self):
         """The stack the user is looking at, falling back to the first texture set."""
@@ -128,7 +170,7 @@ class PainterController:
         """PBR types whose channel exists in ``stack``."""
         present = set()
         for pbr in CHANNEL_SPECS:
-            ct = self.channel_type(pbr)
+            ct = self.channel_type(pbr, stack)
             try:
                 if ct is not None and stack.has_channel(ct):
                     present.add(pbr)
@@ -136,16 +178,40 @@ class PainterController:
                 continue
         return present
 
+    def document_map_names(self, stack, pbr_types):
+        """Export ``documentMap`` names for maps without a fixed name.
+
+        Painter names a document map after its channel type in lower case
+        (e.g. ``user0``), which is what Painter's own export tests use.
+        """
+        names = {}
+        for pbr in pbr_types:
+            m = MAPS_BY_KEY.get(pbr)
+            if m is None or m.doc_map or pbr == "normal":
+                continue
+            ct = self.channel_type(pbr, stack)
+            if ct is None:
+                continue
+            try:
+                names[pbr] = stack.get_channel(ct).type().name.lower()
+            except Exception:
+                names[pbr] = str(getattr(ct, "name", "")).lower()
+        return {k: v for k, v in names.items() if v}
+
     def ensure_channel(self, stack, pbr_type):
         """Add the channel for ``pbr_type`` if the stack lacks it. Returns True when present."""
-        ct = self.channel_type(pbr_type)
-        if ct is None:
-            return False
         try:
+            if self._user_label(pbr_type):
+                if self._find_user_channel(stack, pbr_type) is None:
+                    self._add_user_channel(stack, pbr_type)
+                    self._log_info(f"Added a '{self._user_label(pbr_type)}' User channel to the texture set.")
+                return True
+            ct = self.channel_type(pbr_type)
+            if ct is None:
+                return False
             if stack.has_channel(ct):
                 return True
-            fmt = self.channel_format(pbr_type)
-            stack.add_channel(ct, fmt)
+            stack.add_channel(ct, self.channel_format(pbr_type))
             self._log_info(f"Added missing '{pbr_type}' channel to the texture set.")
             return True
         except Exception as e:
@@ -173,9 +239,10 @@ class PainterController:
     def create_fill_layer(self, stack, sources, layer_name):
         """Insert one fill layer on top of ``stack`` with a texture per channel.
 
-        ``sources`` maps PBR type -> image path. Only channels with a source are
-        made active, so the layer never overwrites other channels with defaults.
-        The whole insert is one undo step. Returns (assigned_pbr_types, errors).
+        ``sources`` maps PBR type -> image path. Only channels that received a
+        texture stay active, so the layer never covers other channels with
+        defaults. The whole insert is one undo step. Returns
+        (assigned_pbr_types, errors).
         """
         errors = []
         resolved = {}
@@ -183,8 +250,12 @@ class PainterController:
             if not self.ensure_channel(stack, pbr):
                 errors.append(f"{pbr}: channel unavailable")
                 continue
+            ct = self.channel_type(pbr, stack)
+            if ct is None:
+                errors.append(f"{pbr}: channel unavailable")
+                continue
             try:
-                resolved[pbr] = (self.channel_type(pbr), self.import_texture_resource(path))
+                resolved[pbr] = (ct, self.import_texture_resource(path))
             except Exception as e:
                 errors.append(f"{pbr}: import failed ({e})")
         if not resolved:
@@ -202,4 +273,9 @@ class PainterController:
                     assigned.append(pbr)
                 except Exception as e:
                     errors.append(f"{pbr}: {e}")
+            if not assigned:
+                layerstack.delete_node(fill)
+            elif len(assigned) < len(resolved):
+                # A failed channel would otherwise stay active with its default value.
+                fill.active_channels = {resolved[pbr][0] for pbr in assigned}
         return assigned, errors

@@ -6,6 +6,8 @@ import re
 import ntpath
 import threading
 
+from .pbr_maps import PBR_MAPS, MAPS_BY_KEY, is_extended
+
 # Attempt to import requests
 try:
     import requests
@@ -51,38 +53,30 @@ def _validate_base_url(url):
 
 
 # AperturePBR shader input name (without the "inputs:" prefix) -> plugin PBR type.
+# Extra names cover materials authored with other shaders' input names.
 REMIX_ATTR_SUFFIX_TO_PBR_MAP = {
-    "diffuse_texture": "albedo", "albedo_texture": "albedo", "basecolor_texture": "albedo", "base_color_texture": "albedo",
-    "normalmap_texture": "normal", "normal_texture": "normal", "worldspacenormal_texture": "normal",
-    "heightmap_texture": "height", "height_texture": "height", "displacement_texture": "height",
-    "roughness_texture": "roughness", "reflectionroughness_texture": "roughness", "specularroughness_texture": "roughness",
-    "metallic_texture": "metallic", "metalness_texture": "metallic",
-    "emissive_mask_texture": "emissive", "emissive_texture": "emissive", "emissive_color_texture": "emissive",
+    "albedo_texture": "albedo", "basecolor_texture": "albedo", "base_color_texture": "albedo",
+    "normal_texture": "normal", "worldspacenormal_texture": "normal",
+    "heightmap_texture": "height", "displacement_texture": "height",
+    "roughness_texture": "roughness", "specularroughness_texture": "roughness",
+    "metalness_texture": "metallic",
+    "emissive_texture": "emissive", "emissive_color_texture": "emissive",
+    **{m.remix_input: m.key for m in PBR_MAPS},
 }
 
 # Plugin PBR type -> AperturePBR shader input. Matches TEXTURE_TYPE_INPUT_MAP in
 # the Remix Toolkit (omni.flux.asset_importer.core). AperturePBR has no opacity
 # texture input: opacity is read from the albedo alpha channel.
-PBR_TO_MDL_INPUT_MAP = {
-    "albedo": "diffuse_texture",
-    "normal": "normalmap_texture",
-    "height": "height_texture",
-    "roughness": "reflectionroughness_texture",
-    "metallic": "metallic_texture",
-    "emissive": "emissive_mask_texture",
-}
+PBR_TO_MDL_INPUT_MAP = {m.key: m.remix_input for m in PBR_MAPS}
 
 # Plugin PBR type -> Remix ingest texture type (TextureTypeNames in the Toolkit).
 # Normal maps are resolved per normal-map format by ingest_type_for().
-PBR_TO_REMIX_INGEST_VALIDATION_TYPE_MAP = {
-    "albedo": "DIFFUSE", "normal": "NORMAL_OGL", "height": "HEIGHT",
-    "roughness": "ROUGHNESS", "metallic": "METALLIC", "emissive": "EMISSIVE",
-}
+PBR_TO_REMIX_INGEST_VALIDATION_TYPE_MAP = {m.key: m.ingest_type for m in PBR_MAPS}
 
-# Suffix letter Remix appends to converted textures (<stem>.<letter>.rtex.dds).
-_INGEST_SUFFIX_LETTER = {
-    "albedo": "a", "normal": "n", "roughness": "r", "metallic": "m", "height": "h", "emissive": "e",
-}
+# Suffix Remix appends to converted textures (<stem>.<suffix>.rtex.dds).
+_INGEST_SUFFIX_LETTER = {m.key: m.suffix for m in PBR_MAPS}
+
+NORMAL_FORMAT_NAMES = {"opengl": "OpenGL", "directx": "DirectX"}
 
 _HASH = r"[A-Za-z0-9]{16}"
 # Instance/mesh prims: /RootNode/instances/inst_<HASH>_<N>[/...] or /RootNode/meshes/mesh_<HASH>[/...].
@@ -92,11 +86,48 @@ _MATERIAL_PARENTS = ("Looks", "materials", "Material")
 
 
 def ingest_type_for(pbr_type, normal_map_format="opengl"):
-    """Remix ingest texture type for a plugin PBR type."""
+    """Remix ingest texture type for a plugin PBR type.
+
+    For normal maps this is how Remix learns the convention: the ingest gives
+    the material ``inputs:encoding`` 1 (OpenGL) or 2 (DirectX), and
+    ConvertToOctahedral decodes the map with that convention.
+    """
     pbr = str(pbr_type).lower()
     if pbr == "normal":
         return "NORMAL_DX" if str(normal_map_format).lower() == "directx" else "NORMAL_OGL"
     return PBR_TO_REMIX_INGEST_VALIDATION_TYPE_MAP.get(pbr, "DIFFUSE")
+
+
+def _extended_check_plugins(pbr_type):
+    """check_plugins for a map that Remix's default "Material" pipeline drops.
+
+    That pipeline's MaterialShaders step rebuilds the ingest material as
+    AperturePBR from a fixed attribute list, which has no anisotropy or
+    subsurface inputs, and its ConvertToDDS defaults don't list them either.
+    The ingest stage is thrown away afterwards, so these maps skip the material
+    conversion and get a ConvertToDDS entry for their input. The data flows
+    match material_ingestion.json, so the output and its ingest metadata are
+    written the same way as for the other maps.
+    """
+    m = MAPS_BY_KEY[pbr_type]
+    block_format, gamma_encoded = m.dds
+    return [{
+        "name": "ConvertToDDS",
+        "selector_plugins": [{"name": "AllShaders", "data": {}}],
+        "resultor_plugins": [{"name": "FileCleanup", "data": {"channel": "cleanup_files", "cleanup_output": False}}],
+        "data": {
+            "conversion_settings": {
+                f"inputs:{m.remix_input}": {"block_format": block_format, "gamma_encoded": gamma_encoded},
+            },
+            "data_flows": [
+                {"name": "InOutData", "push_input_data": True, "push_output_data": True, "channel": "cleanup_files"},
+                {"name": "InOutData", "push_output_data": True, "channel": "write_metadata"},
+                {"name": "InOutData", "push_output_data": True, "channel": "ingestion_output"},
+            ],
+        },
+        "stop_if_fix_failed": True,
+        "context_plugin": {"name": "CurrentStage", "data": {}},
+    }]
 
 
 def material_hash_from_prim(material_prim):
@@ -501,35 +532,42 @@ class RemixAPIClient:
         encoded = urllib.parse.quote(str(material_prim).replace(os.sep, "/"), safe="/")
         res = self.make_request("GET", f"/stagecraft/assets/{encoded}/textures")
         if res.get("success") and isinstance(res.get("data"), dict):
-             return res["data"].get("textures", []), None
+            return res["data"].get("textures", []), None
         return None, res.get("error", "Failed to get textures.")
 
-    def ingest_texture(self, pbr_type, texture_file_path, project_output_dir_abs):
+    def ingest_texture(self, pbr_type, texture_file_path, project_output_dir_abs, normal_map_format=None, output_subfolder=None):
         """Ingest one texture through the Remix "Material" ingestion schema.
 
         Only the TextureImporter context data is overridden. The Toolkit merges
         dicts recursively but replaces lists wholesale, so leaving check_plugins
         alone keeps its default pipeline: MaterialShaders -> ConvertToOctahedral
         -> ConvertToDDS. Normal maps must go through ConvertToOctahedral, since
-        AperturePBR materials default to octahedral normal encoding.
-        """
-        self._log_info(f"Ingesting {pbr_type}: {self.safe_basename(texture_file_path)}")
+        AperturePBR materials default to octahedral normal encoding. Maps that
+        pipeline drops (anisotropy, subsurface) send their own check_plugins.
 
+        ``normal_map_format`` and ``output_subfolder`` default to the settings;
+        a push passes the values it exported with so a settings change made
+        while it runs can't mislabel the normal map.
+        """
         if not os.path.isfile(texture_file_path):
-             return None, f"File not found: {texture_file_path}"
+            return None, f"File not found: {texture_file_path}"
         if not project_output_dir_abs:
             return None, "Remix project output directory is unknown."
 
         settings = self.settings_getter() or {}
-        output_subfolder = str(settings.get("remix_output_subfolder", "Textures/PainterConnector_Ingested")).strip('/\\')
-        target_ingest_dir_abs = os.path.normpath(os.path.join(project_output_dir_abs, output_subfolder))
+        if output_subfolder is None:
+            output_subfolder = settings.get("remix_output_subfolder", "Textures/PainterConnector_Ingested")
+        if normal_map_format is None:
+            normal_map_format = settings.get("normal_map_format", "opengl")
+        target_ingest_dir_abs = os.path.normpath(os.path.join(project_output_dir_abs, str(output_subfolder).strip('/\\')))
 
         try: os.makedirs(target_ingest_dir_abs, exist_ok=True)
         except Exception as e: return None, f"Failed to create directory: {e}"
 
         abs_texture_path = os.path.abspath(texture_file_path).replace(os.sep, '/')
         target_ingest_dir_api = os.path.abspath(target_ingest_dir_abs).replace(os.sep, '/')
-        ingest_type = ingest_type_for(pbr_type, settings.get("normal_map_format", "opengl"))
+        ingest_type = ingest_type_for(pbr_type, normal_map_format)
+        self._log_info(f"Ingesting {pbr_type} as {ingest_type}: {self.safe_basename(texture_file_path)}")
 
         ingest_payload = {
             "executor": 1,
@@ -550,6 +588,11 @@ class RemixAPIClient:
                 },
             },
         }
+        if is_extended(pbr_type):
+            ingest_payload["check_plugins"] = _extended_check_plugins(pbr_type)
+            # The schema's shared "max conversions" control targets ConvertToOctahedral,
+            # which these maps don't run; Remix rejects a target that's missing.
+            ingest_payload["data"] = {"mass_ui": {"shared_int_fields": []}}
 
         # Ingest is long-running; use a much larger timeout and no retries
         # so we don't accidentally re-queue a job the server is still working on.

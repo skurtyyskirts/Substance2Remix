@@ -12,10 +12,12 @@ TEXCONV_TIMEOUT_SECONDS = 180
 BLENDER_TIMEOUT_SECONDS = 900
 
 _PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
+# Uncompressed and RLE color-mapped, true-color and grayscale TGA image types.
+_TGA_IMAGE_TYPES = {1, 2, 3, 9, 10, 11}
 
 
 def read_image_size(path):
-    """(width, height) from a PNG or DDS header, or (0, 0) if unknown.
+    """(width, height) from a PNG, DDS or TGA header, or (0, 0) if unknown.
 
     Header parsing keeps this independent of Pillow, which is only needed for
     pixel work.
@@ -30,6 +32,10 @@ def read_image_size(path):
         return int(w), int(h)
     if header[:4] == b'DDS ' and len(header) >= 20:
         h, w = struct.unpack('<II', header[12:20])
+        return int(w), int(h)
+    # TGA has no signature; trust the extension and sanity-check the header.
+    if str(path).lower().endswith(".tga") and len(header) >= 18 and header[2] in _TGA_IMAGE_TYPES:
+        w, h = struct.unpack('<HH', header[12:16])
         return int(w), int(h)
     return 0, 0
 
@@ -158,16 +164,44 @@ class TextureProcessor:
             raise RuntimeError(f"texconv reported success but output missing: {expected_output_path}")
         return expected_output_path
 
-    def resize_png(self, texconv_exe, png_path, width, height):
-        """Resize a PNG in place with texconv (cubic filtering)."""
+    def resize_image(self, texconv_exe, image_path, width, height):
+        """Resize a PNG or TGA in place with texconv (cubic filtering).
+
+        The output keeps the input's format, so texconv overwrites the file
+        that will be ingested instead of writing a sibling.
+        """
         if not texconv_exe or not os.path.isfile(texconv_exe):
             raise RuntimeError("texconv.exe not found; cannot resize.")
+        file_type = os.path.splitext(image_path)[1].lstrip(".").lower() or "png"
         command = [
             texconv_exe, "-w", str(int(width)), "-h", str(int(height)),
-            "-ft", "png", "-if", "CUBIC", "-y", "-nologo",
-            "-o", os.path.dirname(png_path), png_path,
+            "-ft", file_type, "-if", "CUBIC", "-y", "-nologo",
+            "-o", os.path.dirname(image_path), image_path,
         ]
-        self._run_texconv(command, self.safe_basename(png_path))
+        self._run_texconv(command, self.safe_basename(image_path))
+
+    # --- Value remaps ---
+
+    def _first_band(self, image_path):
+        """The image's first channel as 8-bit grayscale. Single-channel maps can
+        arrive as RGB(A) with the data in red (texconv's RGBA expansion)."""
+        Image, _ = self._image_modules()
+        with Image.open(image_path) as img:
+            band = img.split()[0]
+            band.load()
+        return band if band.mode == "L" else band.convert("L")
+
+    def anisotropy_to_remix(self, image_path):
+        """Painter Anisotropy Level (0 = isotropic) -> Remix anisotropy (0.5 = isotropic).
+
+        AperturePBR decodes the map as ``texel * 2 - 1`` (-1..1). Painter's
+        level has no sign, so it maps onto the positive half: 0 -> 0.5, 1 -> 1.
+        """
+        self._first_band(image_path).point(lambda v: (v + 256) // 2).save(image_path)
+
+    def anisotropy_from_remix(self, image_path):
+        """Inverse of anisotropy_to_remix; negative Remix values keep their magnitude."""
+        self._first_band(image_path).point(lambda v: min(255, abs(2 * v - 255))).save(image_path)
 
     # --- Normal maps ---
 

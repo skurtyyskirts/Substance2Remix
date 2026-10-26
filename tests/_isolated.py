@@ -12,7 +12,17 @@ import sys
 import types
 
 PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PACKAGE = os.path.basename(PLUGIN_DIR)
 _counter = itertools.count()
+
+
+def import_plugin_module(module_name):
+    """Import a plugin module through the real plugin package, so its relative
+    imports (``from .pbr_maps import ...``) resolve."""
+    parent = os.path.dirname(PLUGIN_DIR)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    return importlib.import_module(f"{PACKAGE}.{module_name}")
 
 
 def load_isolated(module_name, **fake_siblings):

@@ -47,6 +47,18 @@ class TestImageHeaders(unittest.TestCase):
             self.assertEqual(texture_processor.read_image_size(dds), (2048, 512))
             self.assertEqual(texture_processor.read_image_size(os.path.join(tmp, "missing.png")), (0, 0))
 
+    def test_tga_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tga = os.path.join(tmp, "a.tga")
+            # 18-byte header: id length, color map type, image type 2 (true color), ..., width, height, depth.
+            with open(tga, "wb") as f:
+                f.write(bytes([0, 0, 2]) + b"\x00" * 9 + struct.pack("<HH", 512, 2048) + bytes([32, 8]))
+            self.assertEqual(texture_processor.read_image_size(tga), (512, 2048))
+            # Not a TGA image type: unknown rather than garbage.
+            with open(tga, "wb") as f:
+                f.write(bytes([0, 0, 77]) + b"\x00" * 15)
+            self.assertEqual(texture_processor.read_image_size(tga), (0, 0))
+
     def test_octahedral_name_detection(self):
         self.assertTrue(texture_processor.is_octahedral_normal_name("C:/x/H_OTH_Normal.n.rtex.dds"))
         self.assertTrue(texture_processor.is_octahedral_normal_name("C:/x/H_oth.n.rtex.dds"))
@@ -110,6 +122,28 @@ class TestNormalConversion(unittest.TestCase):
         self.assertAlmostEqual(out[0], 0.6, delta=0.03)
         self.assertAlmostEqual(out[1], -0.4, delta=0.03)
         self.assertGreater(out[2], 0.6)
+
+    def test_anisotropy_maps_onto_remix_signed_range_and_back(self):
+        path = os.path.join(self.tmp, "an.png")
+        self.Image.new("L", (3, 1)).save(path)
+        img = self.Image.open(path)
+        img.putdata([0, 128, 255])
+        img.save(path)
+        _make_processor().anisotropy_to_remix(path)
+        remix = list(self.Image.open(path).getdata())
+        # AperturePBR decodes texel * 2 - 1: Painter's 0 (isotropic) must land on ~0.5.
+        self.assertAlmostEqual(remix[0] / 255 * 2 - 1, 0.0, delta=0.01)
+        self.assertEqual(remix[2], 255)
+        _make_processor().anisotropy_from_remix(path)
+        for got, want in zip(self.Image.open(path).getdata(), [0, 128, 255]):
+            self.assertAlmostEqual(got, want, delta=2)
+
+    def test_anisotropy_reads_red_of_an_rgb_expansion(self):
+        # texconv's RGBA expansion of a BC4 map puts the data in red only.
+        path = os.path.join(self.tmp, "an_rgba.png")
+        self.Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(path)
+        _make_processor().anisotropy_from_remix(path)
+        self.assertEqual(self.Image.open(path).getpixel((0, 0)), 255)
 
     def test_extract_alpha(self):
         src = os.path.join(self.tmp, "albedo.png")
@@ -217,16 +251,19 @@ class TestConvertDdsToPng(unittest.TestCase):
         self.assertEqual(cmd[-1], fake_dds)
 
     @patch("subprocess.run")
-    def test_resize_png_command(self, mock_run):
+    def test_resize_command_keeps_the_file_format(self, mock_run):
         fake_texconv = os.path.join(self.tmpdir, "texconv.exe")
         open(fake_texconv, "w").close()
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        png = os.path.join(self.tmpdir, "a.png")
-        self.tp.resize_png(fake_texconv, png, 512, 2048)
-        cmd = mock_run.call_args[0][0]
-        self.assertEqual(cmd[cmd.index("-w") + 1], "512")
-        self.assertEqual(cmd[cmd.index("-h") + 1], "2048")
-        self.assertEqual(cmd[-1], png)
+        for name, file_type in (("a.png", "png"), ("b.TGA", "tga")):
+            image = os.path.join(self.tmpdir, name)
+            self.tp.resize_image(fake_texconv, image, 512, 2048)
+            cmd = mock_run.call_args[0][0]
+            self.assertEqual(cmd[cmd.index("-w") + 1], "512")
+            self.assertEqual(cmd[cmd.index("-h") + 1], "2048")
+            # texconv must overwrite the exported file itself, not write a .png beside a .tga.
+            self.assertEqual(cmd[cmd.index("-ft") + 1], file_type)
+            self.assertEqual(cmd[-1], image)
 
 
 class TestBlenderUnwrap(unittest.TestCase):

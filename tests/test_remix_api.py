@@ -12,10 +12,10 @@ import requests as _req_mock  # actually the conftest stub
 _ConnErr = _req_mock.exceptions.ConnectionError
 _Timeout = _req_mock.exceptions.Timeout
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from ._isolated import import_plugin_module  # noqa: E402
 
-import remix_api  # noqa: E402
-from remix_api import RemixAPIClient  # noqa: E402
+remix_api = import_plugin_module("remix_api")
+RemixAPIClient = remix_api.RemixAPIClient
 
 
 def _make_client(base_url="http://localhost:8011", **extra):
@@ -459,6 +459,67 @@ class TestIngestTexture(unittest.TestCase):
         self.assertEqual(data["input_files"][0][1], "NORMAL_OGL")
         self.assertTrue(data["output_directory"].endswith("Textures/Out"))
         self.assertEqual(kwargs["retries"], 1)
+
+    def test_explicit_normal_format_and_subfolder_override_settings(self):
+        # A push passes the convention it exported with; a later settings change must not leak in.
+        client = _make_client(remix_output_subfolder="Textures/Settings", normal_map_format="opengl")
+        with patch.object(client, "make_request", return_value={"success": False, "error": "x"}) as req:
+            client.ingest_texture("normal", self.src, self.out_dir, normal_map_format="directx",
+                                  output_subfolder="Textures/Push")
+        data = req.call_args[1]["json_payload"]["context_plugin"]["data"]
+        self.assertEqual(data["input_files"][0][1], "NORMAL_DX")
+        self.assertTrue(data["output_directory"].endswith("Textures/Push"))
+
+    def test_extended_map_gets_its_own_dds_step(self):
+        client = _make_client(remix_output_subfolder="Textures/Out")
+        src = os.path.join(self.tmp.name, "DEADBEEFDEADBEEF_Anisotropy.png")
+        open(src, "wb").close()
+        ingest_dir = os.path.join(self.out_dir, "Textures", "Out")
+        os.makedirs(ingest_dir)
+        produced = os.path.join(ingest_dir, "DEADBEEFDEADBEEF_Anisotropy.an.rtex.dds")
+        open(produced, "wb").close()
+        with patch.object(client, "make_request", return_value={"success": True, "data": _completed([produced])}) as req:
+            result, err = client.ingest_texture("anisotropy", src, self.out_dir)
+        self.assertIsNone(err)
+        self.assertEqual(os.path.normcase(result), os.path.normcase(produced))
+        payload = req.call_args[1]["json_payload"]
+        self.assertEqual(payload["context_plugin"]["data"]["input_files"][0][1], "ANISOTROPY")
+        # MaterialShaders would rebuild the material without the anisotropy input, so only ConvertToDDS runs.
+        (dds,) = payload["check_plugins"]
+        self.assertEqual(dds["name"], "ConvertToDDS")
+        self.assertEqual(dds["data"]["conversion_settings"],
+                         {"inputs:anisotropy_texture": {"block_format": "bc4", "gamma_encoded": False}})
+        channels = {flow.get("channel") for flow in dds["data"]["data_flows"]}
+        self.assertEqual(channels, {"cleanup_files", "write_metadata", "ingestion_output"})
+        # Remix 422s when the schema's shared field targets a plugin (ConvertToOctahedral) that isn't there.
+        self.assertEqual(payload["data"], {"mass_ui": {"shared_int_fields": []}})
+
+    def test_standard_maps_keep_the_default_pipeline(self):
+        client = _make_client()
+        for pbr in ("albedo", "normal", "roughness", "metallic", "height", "emissive"):
+            with patch.object(client, "make_request", return_value={"success": False, "error": "x"}) as req:
+                client.ingest_texture(pbr, self.src, self.out_dir)
+            self.assertNotIn("check_plugins", req.call_args[1]["json_payload"], pbr)
+            self.assertNotIn("data", req.call_args[1]["json_payload"], pbr)
+
+
+class TestRemixTextureTables(unittest.TestCase):
+    def test_every_remix_ingest_type_is_covered(self):
+        # TextureTypes in omni.flux.asset_importer.core (Toolkit 1.6.1), minus OTHER/SKYBOX
+        # and the normal variants resolved by ingest_type_for().
+        self.assertEqual(set(remix_api.PBR_TO_REMIX_INGEST_VALIDATION_TYPE_MAP.values()), {
+            "DIFFUSE", "NORMAL_OGL", "ROUGHNESS", "METALLIC", "HEIGHT", "EMISSIVE",
+            "ANISOTROPY", "TRANSMITTANCE", "MEASUREMENT_DISTANCE", "SINGLE_SCATTERING"})
+
+    def test_inputs_match_aperture_pbr(self):
+        self.assertEqual(remix_api.PBR_TO_MDL_INPUT_MAP["anisotropy"], "anisotropy_texture")
+        self.assertEqual(remix_api.PBR_TO_MDL_INPUT_MAP["thickness"], "subsurface_thickness_texture")
+        for pbr, remix_input in remix_api.PBR_TO_MDL_INPUT_MAP.items():
+            self.assertEqual(remix_api.REMIX_ATTR_SUFFIX_TO_PBR_MAP[remix_input], pbr)
+
+    def test_extended_outputs_are_picked_by_suffix(self):
+        outs = ["C:/o/H_Thickness.md.rtex.dds", "C:/o/H_Thickness.png"]
+        self.assertEqual(remix_api._pick_ingested_output(outs, "C:/x/H_Thickness.png", "thickness"), outs[0])
 
 
 class TestPickIngestedOutput(unittest.TestCase):

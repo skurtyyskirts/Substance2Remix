@@ -18,6 +18,8 @@ _temp/
 settings.json
 .vscode/
 .idea/
+.cursor/
+*.code-workspace
 *.log
 *.spec
 dist/

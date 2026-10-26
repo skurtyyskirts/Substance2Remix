@@ -67,7 +67,9 @@ def _export_mesh(path):
         else:
             _call(bpy.ops.export_scene.obj, filepath=path, use_selection=True)
     elif ext in (".gltf", ".glb"):
-        _call(bpy.ops.export_scene.gltf, filepath=path, use_selection=True)
+        # The exporter defaults to GLB whatever the file name says.
+        _call(bpy.ops.export_scene.gltf, filepath=path, use_selection=True,
+              export_format="GLB" if ext == ".glb" else "GLTF_SEPARATE")
     else:
         raise ValueError(f"Unsupported output format: {ext}")
 

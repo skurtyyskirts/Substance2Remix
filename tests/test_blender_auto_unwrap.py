@@ -93,6 +93,15 @@ class TestBlenderAutoUnwrap(unittest.TestCase):
         bpy_mock.ops.import_scene.fbx.assert_called_once_with(filepath='in.fbx')
         bpy_mock.ops.export_scene.fbx.assert_called_once_with(filepath='out.fbx', use_selection=True)
 
+    def test_gltf_export_format_follows_the_extension(self, _kw):
+        # Blender's glTF exporter writes GLB unless told otherwise, whatever the file name.
+        self._run('in.gltf', 'out.gltf')
+        self.assertEqual(bpy_mock.ops.export_scene.gltf.call_args[1]["export_format"], "GLTF_SEPARATE")
+        bpy_mock.reset_mock()
+        bpy_mock.context.scene.objects = [self.mesh]
+        self._run('in.glb', 'out.glb')
+        self.assertEqual(bpy_mock.ops.export_scene.gltf.call_args[1]["export_format"], "GLB")
+
     def test_obj_flow_uses_modern_operators(self, _kw):
         self._run('in.obj', 'out.obj')
         bpy_mock.ops.wm.obj_import.assert_called_once_with(filepath='in.obj')
