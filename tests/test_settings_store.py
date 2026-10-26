@@ -33,15 +33,14 @@ class TestSettingsStore(unittest.TestCase):
     def test_defaults_without_any_file(self):
         store = self._store()
         self.assertEqual(store.settings["normal_map_format"], "opengl")
-        self.assertTrue(store.settings["use_remix_preview_shader"])
         self.assertEqual(store.errors, [])
 
     def test_changes_load_again_on_the_next_start(self):
-        self._store().update({"normal_map_format": "directx", "texture_maps": {"height": False}})
+        self._store().update({"normal_map_format": "directx", "restore_original_aspect_ratio_on_export": False})
         reloaded = self._store()
         self.assertEqual(reloaded.settings["normal_map_format"], "directx")
-        self.assertFalse(reloaded.settings["texture_maps"]["height"])
-        self.assertTrue(reloaded.settings["texture_maps"]["albedo"])
+        self.assertFalse(reloaded.settings["restore_original_aspect_ratio_on_export"])
+        self.assertTrue(reloaded.settings["auto_import_textures_on_pull"])
 
     def test_old_plugin_folder_settings_are_migrated(self):
         with open(self.legacy, "w", encoding="utf-8") as f:

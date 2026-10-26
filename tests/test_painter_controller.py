@@ -1,3 +1,4 @@
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -185,8 +186,31 @@ class TestPainterController(unittest.TestCase):
         self.sp.js.evaluate.side_effect = evaluate
         return calls
 
+    def test_register_shelf_adds_it_once(self):
+        self.sp.resource.Shelves.exists.return_value = False
+        self.controller.register_shelf()
+        self.sp.resource.Shelves.add.assert_called_once_with("substance2remix", painter_controller.SHELF_PATH)
+        self.assertTrue(os.path.isfile(painter_controller.REMIX_SHADER_PATH))
+        self.assertEqual(os.path.dirname(os.path.dirname(painter_controller.REMIX_SHADER_PATH)),
+                         painter_controller.SHELF_PATH)
+        self.sp.resource.Shelves.reset_mock()
+        self.sp.resource.Shelves.exists.return_value = True
+        self.controller.register_shelf()
+        self.sp.resource.Shelves.add.assert_not_called()
+
+    def test_use_remix_shader_takes_the_shelf_copy(self):
+        calls = self._js([{"id": 0, "shader": "pbr-metal-rough-with-alpha-blending"}])
+        hit = MagicMock()
+        hit.identifier.return_value.url.return_value = "resource://substance2remix/rtx-remix-preview"
+        self.sp.resource.search.return_value = [hit]
+        self.controller.use_remix_shader(self._user_stack({}))
+        self.assertEqual(self.sp.resource.search.call_args[0][0], "s:substance2remix u:shader n:rtx-remix-preview")
+        self.sp.resource.import_project_resource.assert_not_called()
+        self.assertIn('alg.shaders.updateShaderInstance(0, "resource://substance2remix/rtx-remix-preview")', calls)
+
     def test_use_remix_shader_switches_and_points_at_the_thickness_slot(self):
         calls = self._js([{"id": 0, "shader": "pbr-metal-rough-with-alpha-blending"}])
+        self.sp.resource.search.return_value = []  # shelf not crawled yet: import a project copy
         self.sp.resource.import_project_resource.return_value.identifier.return_value.url.return_value = "resource://p/rtx"
         stack = self._user_stack({0: "Wetness", 2: "Remix Thickness"})
         self.assertEqual(self.controller.use_remix_shader(stack), 1)
@@ -200,8 +224,16 @@ class TestPainterController(unittest.TestCase):
         calls = self._js([{"id": 3, "shader": "rtx-remix-preview"}])
         stack = self._user_stack({})
         self.assertEqual(self.controller.use_remix_shader(stack), 0)
+        self.sp.resource.search.assert_not_called()
         self.sp.resource.import_project_resource.assert_not_called()  # no duplicate resource
         self.assertIn('alg.shaders.setParameters(3, {"remixThicknessChannel": -1})', calls)
+
+    def test_sync_thickness_slot_only_touches_the_preview_shader(self):
+        calls = self._js([{"id": 0, "shader": "rtx-remix-preview"}, {"id": 1, "shader": "pbr-metal-rough"}])
+        self.controller.sync_thickness_slot(self._user_stack({0: "Wetness", 1: "Remix Thickness"}))
+        self.assertIn('alg.shaders.setParameters(0, {"remixThicknessChannel": 1})', calls)
+        self.assertFalse(any(c.startswith("alg.shaders.setParameters(1,") for c in calls))
+        self.assertFalse(any("updateShaderInstance" in c for c in calls))
 
     def test_thickness_beyond_the_shader_slots_is_not_previewed(self):
         calls = self._js([{"id": 0, "shader": "rtx-remix-preview"}])

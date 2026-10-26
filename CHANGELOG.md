@@ -5,35 +5,76 @@ running version is `PLUGIN_VERSION` in `plugin_info.py`.
 
 ## [1.1.0] - 2026-10-26
 
+This release adds a viewport shader for Remix's extra maps. It also removes the controls that duplicated
+what Painter or Remix already handle, so each choice is made in the place artists expect.
+
 ### Added
 
-- **RTX Remix preview shader** (`assets/shaders/rtx-remix-preview.glsl`). Painter's standard
+- **RTX Remix preview shader** (`shelf/shaders/rtx-remix-preview.glsl`). Painter's standard
   "PBR - Metal Rough with alpha blending" shader ignores Remix's anisotropy and subsurface maps, so
-  painting them showed nothing. The new shader renders the standard maps exactly like that shader and
-  also shows anisotropy (along the mesh tangent, as in Remix) and an approximation of Remix's subsurface
-  look from the transmittance, thickness and single-scattering maps. It has its own controls in Shader
-  Settings: subsurface preview strength, default thickness, and the thickness User channel.
-- Pull, Import (when the material has anisotropy or subsurface maps) and **Add Remix Channels** switch
-  the project to the preview shader. **Use RTX Remix Preview Shader** in the menu switches any project.
-  A checkbox in **Settings > Texture Maps** turns the automatic switch off. The shader is imported into
-  the project, so the `.spp` doesn't depend on the plugin.
+  painting them showed nothing. The new shader renders the standard maps exactly like that shader. It
+  also shows:
+  - anisotropy, along the mesh tangent as in Remix
+  - an approximation of Remix's subsurface look, from the transmittance, thickness and single-scattering
+    maps
+
+  It has its own controls in Shader Settings: subsurface preview strength, default thickness and the
+  thickness User channel.
+- **A `substance2remix` shelf.** The plugin registers it at startup, so the preview shader appears in
+  Painter's own shader pickers. Choose it in **Shader Settings** like any other shader. Painter stores
+  the shader inside the project, so a saved `.spp` opens with it even without the plugin.
+- **Pull** uses the preview shader for projects created from Painter's default template. A project
+  template of your own keeps its shader.
+- **Add Remix Channels** is a dropdown with two groups, **Anisotropy** (Specular Anisotropy) and
+  **Subsurface** (Transmission Color, a "Remix Thickness" User channel and Subsurface Color). These are
+  the Remix maps with no obvious Painter channel. When thickness is added or imported, the preview shader
+  is pointed at its User channel.
+- When an import or Add Remix Channels brings in maps that the project's shader can't show, the message
+  says where to pick the preview shader.
 
 ### Removed
 
-- **Presets.** Settings simply save as you change them and load again on the next start. The preset bar
-  in Settings and the preset switcher in the dock panel are gone, and `presets.json` is no longer used.
+Each of these duplicated a control that Painter, Remix or the texture set already has:
+
+- **Presets.** Settings save as you change them and load again on the next start. The preset bar in
+  Settings and the preset switcher in the dock panel are gone, and `presets.json` is no longer used.
+- **Per-map switches (Settings > Texture Maps).** Push sends every Remix map whose channel exists in the
+  texture set, and Import brings in every map the material has. Add or remove a channel in Painter's
+  Texture Set Settings to change what's pushed. Whether Remix uses a map (emission, alpha, displacement
+  depth) stays a setting on the Remix material.
+- **Force Push to Selected Material.** To push onto a different material, use **Link to Selected Remix
+  Material**, then **Push to Remix**.
+- **Automatic shader switching** on import and channel add, the **Use RTX Remix Preview Shader** menu
+  action, and its checkbox. The shader is now picked in Shader Settings (see above).
+- **Export format and export folder settings.** Push exports PNGs to a temporary folder. Remix converts
+  them to DDS on ingest, so the intermediate format never reached Remix.
+- **Test Connection**, which the panel's live status dot already covers, and the **texconv**,
+  **unwrap script** and **log file** path fields. texconv is bundled, the unwrap script ships with the
+  plugin, and the log is one click away in **Open Log Folder**. Custom texconv or unwrap-script paths
+  already in `settings.json` still work.
+
+### Changed
+
+- The Settings dialog has four tabs:
+  - **General**: Remix address, and what Pull uses in place of Painter's New Project dialog
+  - **Push**: aspect-ratio restore, Remix output subfolder
+  - **Blender**: the optional re-unwrap
+  - **Advanced**: request timeout, log level
+- Older settings files are migrated (settings version 5). Retired keys are dropped.
 
 ### Fixed
 
 - Pull no longer lists informational notes, such as "uses the tiling plane", under "Skipped". The note
-  also points to the right tab: **Settings > Project**.
+  also points to the right tab: **Settings > General**.
 - The Settings dialog's "Saved" message no longer outlives the dialog.
 
 ### Verified
 
-- In Painter 12.2: the preview shader compiles and is applied, and Painter exports all ten Remix maps,
-  including anisotropy, transmittance, thickness and single scattering, under the channel names the
-  plugin resolves at runtime.
+- In Painter 12.2, with all ten Remix maps:
+  - The preview shader compiles and is applied from the shelf.
+  - A saved project reopens with the shader after the shelf is removed.
+  - Painter exports all ten maps, including anisotropy, transmittance, thickness and single scattering,
+    under the channel names the plugin resolves at runtime.
 
 ## [1.0.0] - 2026-10-26
 

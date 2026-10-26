@@ -15,6 +15,11 @@ logs/
 Pulled Textures/
 assets/gotoingest/
 _temp/
+# Painter scaffolds a full shelf (README.txt per resource type, .alg_meta caches) when it
+# registers one; only the preview shader is ours.
+shelf/**
+!shelf/shaders/
+!shelf/shaders/rtx-remix-preview.glsl
 settings.json
 .vscode/
 .idea/

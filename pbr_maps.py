@@ -50,7 +50,7 @@ PBR_MAPS = (
     # Encodings follow TEXTURE_INFO in lightspeed.trex.asset_pipeline.core.
     PbrMap(key="anisotropy", label="Anisotropy", remix_input="anisotropy_texture", ingest_type="ANISOTROPY",
            suffix="an", file_suffix="Anisotropy", channels=("SpecularRoughnessAnisotropy", "Anisotropylevel"),
-           channel_format="L8", color=False, doc_map=None, painter_label="Anisotropy Level", user_label="",
+           channel_format="L8", color=False, doc_map=None, painter_label="Specular Anisotropy", user_label="",
            dds=("bc4", False)),
     PbrMap(key="transmittance", label="Subsurface Transmittance", remix_input="subsurface_transmittance_texture",
            ingest_type="TRANSMITTANCE", suffix="tr", file_suffix="Transmittance",
@@ -73,8 +73,13 @@ MAP_KEYS = tuple(m.key for m in PBR_MAPS)
 EXTENDED_MAP_KEYS = tuple(m.key for m in PBR_MAPS if m.dds)
 
 OPACITY = "opacity"
-# Everything the user can switch on or off in Settings > Texture Maps.
-TOGGLE_KEYS = MAP_KEYS + (OPACITY,)
+
+# Channel groups "Add Remix Channels" offers: the Remix inputs whose Painter
+# channel isn't obvious. Standard channels are added in Texture Set Settings.
+CHANNEL_GROUPS = {
+    "anisotropy": ("anisotropy",),
+    "subsurface": ("transmittance", "thickness", "single_scattering"),
+}
 
 
 def is_extended(key):

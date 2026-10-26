@@ -30,10 +30,13 @@ except ImportError:
     substance_painter.ui = MockPainterModule()
     substance_painter.js = MockPainterModule()
 
-# Viewport shader that previews every Remix map (assets/shaders/rtx-remix-preview.glsl).
+# The plugin's shelf: Painter lists its contents (the RTX Remix preview shader) in
+# its own resource pickers, e.g. Shader Settings. Registered for the session only.
+SHELF_NAME = "substance2remix"
+SHELF_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shelf")
+# Viewport shader that previews every Remix map (shelf/shaders/rtx-remix-preview.glsl).
 REMIX_SHADER_NAME = "rtx-remix-preview"
-REMIX_SHADER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "shaders",
-                                 f"{REMIX_SHADER_NAME}.glsl")
+REMIX_SHADER_PATH = os.path.join(SHELF_PATH, "shaders", f"{REMIX_SHADER_NAME}.glsl")
 # User channels the preview shader can read the Remix thickness map from (User0..User3).
 REMIX_SHADER_USER_SLOTS = 4
 
@@ -242,7 +245,26 @@ class PainterController:
             self._log_warning(f"Could not set texture set resolution to {width}x{height}: {e}")
             return False
 
-    # --- Viewport shader ---
+    # --- Shelf / viewport shader ---
+
+    def register_shelf(self):
+        """Add the plugin's shelf for this session, so the preview shader shows up in
+        Painter's shader picker."""
+        shelves = substance_painter.resource.Shelves
+        if not shelves.exists(SHELF_NAME):
+            shelves.add(SHELF_NAME, SHELF_PATH)
+
+    def _remix_shader_url(self):
+        """URL of the preview shader: the shelf copy when Painter has crawled it,
+        otherwise a copy imported into the project."""
+        try:
+            for res in substance_painter.resource.search(f"s:{SHELF_NAME} u:shader n:{REMIX_SHADER_NAME}") or []:
+                return res.identifier().url()
+        except Exception as e:
+            self._log_warning(f"Shelf search failed ({e}); importing the preview shader into the project.")
+        resource = substance_painter.resource.import_project_resource(
+            REMIX_SHADER_PATH, substance_painter.resource.Usage.SHADER)
+        return resource.identifier().url()
 
     def shader_instances(self):
         """The project's shader instances: [{"id", "label", "shader", "url"}, ...]."""
@@ -262,9 +284,6 @@ class PainterController:
         """Switch the project's shader instances to the RTX Remix preview shader
         and point it at the thickness User channel. Returns how many instances
         were switched (0 when they already used it).
-
-        The shader file is imported into the project, so the .spp keeps working
-        without the plugin.
         """
         instances = self.shader_instances()
         switched = 0
@@ -273,21 +292,29 @@ class PainterController:
             if inst.get("shader") == REMIX_SHADER_NAME:
                 continue
             if url is None:
-                resource = substance_painter.resource.import_project_resource(
-                    REMIX_SHADER_PATH, substance_painter.resource.Usage.SHADER)
-                url = resource.identifier().url()
+                url = self._remix_shader_url()
             substance_painter.js.evaluate(
                 f"alg.shaders.updateShaderInstance({int(inst['id'])}, {json.dumps(url)})")
             switched += 1
+        self._set_thickness_slot(stack, [inst["id"] for inst in instances])
+        return switched
+
+    def sync_thickness_slot(self, stack):
+        """Point the instances already using the preview shader at the thickness
+        User channel (after it was added or imported). Other shaders are left alone."""
+        ids = [inst["id"] for inst in self.shader_instances() if inst.get("shader") == REMIX_SHADER_NAME]
+        if ids:
+            self._set_thickness_slot(stack, ids)
+
+    def _set_thickness_slot(self, stack, instance_ids):
         slot = self.thickness_user_slot(stack)
         if slot >= REMIX_SHADER_USER_SLOTS:
             self._log_warning(f"The Remix Thickness map is in User{slot}; the preview shader only reads "
                               f"User0-User{REMIX_SHADER_USER_SLOTS - 1}, so it isn't previewed.")
             slot = -1
         params = json.dumps({"remixThicknessChannel": slot})
-        for inst in instances:
-            substance_painter.js.evaluate(f"alg.shaders.setParameters({int(inst['id'])}, {params})")
-        return switched
+        for inst_id in instance_ids:
+            substance_painter.js.evaluate(f"alg.shaders.setParameters({int(inst_id)}, {params})")
 
     # --- Layers ---
 

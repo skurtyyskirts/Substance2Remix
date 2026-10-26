@@ -60,32 +60,30 @@ class TestSettingsDialog(unittest.TestCase):
         self.assertEqual(SettingsStore(".", config_dir=self.tmp.name).load()["normal_map_format"], "directx")
 
     def test_closing_flushes_a_pending_change(self):
-        self.dialog.map_checks["height"].setChecked(False)
+        self.dialog.restore_aspect.setChecked(False)
+        self.assertTrue(self.dialog._save_timer.isActive())
         self.dialog.close_btn.click()
-        self.assertFalse(self.controller.store.settings["texture_maps"]["height"])
+        self.assertFalse(self.controller.store.settings["restore_original_aspect_ratio_on_export"])
 
     def test_closing_saves_a_typed_field_without_editing_finished(self):
         self.dialog.remix_output_subfolder.setText("Textures/Typed")  # setText emits no editingFinished
         self.dialog.reject()  # window close button
         self.assertEqual(self.controller.store.settings["remix_output_subfolder"], "Textures/Typed")
 
-    def test_opacity_follows_albedo(self):
-        self.dialog.map_checks["albedo"].setChecked(False)
-        self.assertFalse(self.dialog.map_checks["opacity"].isEnabled())
-        self.dialog.map_checks["albedo"].setChecked(True)
-        self.assertTrue(self.dialog.map_checks["opacity"].isEnabled())
+    def test_tabs(self):
+        tabs = [self.dialog.tabs.tabText(i) for i in range(self.dialog.tabs.count())]
+        self.assertEqual(tabs, ["General", "Push", "Blender", "Advanced"])
 
-    def test_every_remix_map_has_a_toggle(self):
-        self.assertEqual(set(self.dialog.map_checks), set(settings_dialog.MAPS_BY_KEY) | {"opacity"})
+    def test_only_settings_painter_and_remix_do_not_own(self):
+        # Map choice, viewport shader, export format and presets belong to Painter,
+        # Remix or the texture set, so the dialog doesn't offer them.
+        for name in ("preset_combo", "map_checks", "preview_shader", "export_format", "export_path"):
+            self.assertFalse(hasattr(self.dialog, name), name)
 
-    def test_preview_shader_checkbox_is_saved(self):
-        self.assertTrue(self.dialog.preview_shader.isChecked())  # on by default
-        self.dialog.preview_shader.setChecked(False)
-        self.dialog._commit()
-        self.assertFalse(self.controller.store.settings["use_remix_preview_shader"])
-
-    def test_dialog_has_no_presets(self):
-        self.assertFalse(hasattr(self.dialog, "preset_combo"))
+    def test_every_field_round_trips(self):
+        gathered = self.dialog._gather()
+        for key, value in gathered.items():
+            self.assertEqual(self.controller.store.settings[key], value, key)
 
     def test_restore_defaults_asks_first(self):
         self.controller.update_settings({"normal_map_format": "directx"})

@@ -18,14 +18,14 @@ _INGEST_MAX_WORKERS = 2
 # Local imports
 from .qt_utils import QObject, Signal, Slot, QThreadPool, QtWidgets, QtCore, QtGui, QT_BINDING
 from .plugin_info import PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_REPO_URL, PLUGIN_DESCRIPTION
-from .pbr_maps import PBR_MAPS, MAPS_BY_KEY, MAP_KEYS, OPACITY, is_extended
+from .pbr_maps import PBR_MAPS, MAPS_BY_KEY, MAP_KEYS, OPACITY, CHANNEL_GROUPS, is_extended
 from .remix_api import (RemixAPIClient, REMIX_ATTR_SUFFIX_TO_PBR_MAP, PBR_TO_MDL_INPUT_MAP, NORMAL_FORMAT_NAMES,
                         material_hash_from_prim)
 from .texture_processor import TextureProcessor, read_image_size, is_octahedral_normal_name
 from .painter_controller import PainterController, aspect_matched_resolution, pow2_ceil
 from .async_utils import Worker
 from .settings_dialog import create_settings_dialog_instance
-from .settings_schema import sanitize_settings, enabled_maps, NORMAL_MAP_FORMATS
+from .settings_schema import sanitize_settings, NORMAL_MAP_FORMATS
 from .settings_store import SettingsStore
 from .diagnostics_dialog import DiagnosticsDialog
 
@@ -48,6 +48,9 @@ LOG_DIR = os.path.join(PLUGIN_DIR, "logs")
 LOG_FILE_PATH = os.path.join(LOG_DIR, "remix_connector.log")
 PULLED_TEXTURES_DIR = os.path.join(PLUGIN_DIR, "Pulled Textures")
 WORK_DIR = os.path.join(PLUGIN_DIR, "_temp")
+# Push exports here before Remix ingests them; the files are intermediate, so PNG
+# (lossless, with the opacity alpha) in a temp folder.
+EXPORT_DIR = os.path.join(tempfile.gettempdir(), "RemixConnector_Export")
 DEFAULT_TILING_MESH = os.path.join("assets", "meshes", "plane_tiling.usd")
 DEFAULT_TEMPLATE_NAME = "PBR - Metallic Roughness Alpha-blend.spt"
 
@@ -79,25 +82,26 @@ def _material_file_key(material_prim):
     return re.sub(r"[^A-Za-z0-9_]", "_", name) or "Material"
 
 
-def build_export_maps(material_hash, present_pbr, normal_map_format="opengl", export_format="png",
-                      enabled=None, doc_maps=None):
+def build_export_maps(material_hash, present_pbr, normal_map_format="opengl", doc_maps=None):
     """Painter export-preset maps for the channels that exist in the stack.
+
+    Every Remix map whose channel exists is exported: the texture set's
+    channels are the artist's choice of maps, and whether Remix uses one
+    (emission, alpha, displacement) is set on the Remix material.
 
     The normal map uses Painter's ``Normal_OpenGL``/``Normal_DirectX`` virtual
     map, which bakes the height channel and any baked normal map into the
     normal channel (the plain ``normal`` document map omits both). Opacity
     rides in the albedo alpha, which is where AperturePBR reads it.
 
-    ``enabled`` limits the export to the maps switched on in Settings (None =
-    all). ``doc_maps`` names the document map of channels without a fixed
-    name (see PainterController.document_map_names).
+    ``doc_maps`` names the document map of channels without a fixed name
+    (see PainterController.document_map_names).
 
     Returns (maps, {file stem: pbr type}).
     """
-    params = {"fileFormat": export_format, "bitDepth": "8", "paddingAlgorithm": "infinite",
+    params = {"fileFormat": "png", "bitDepth": "8", "paddingAlgorithm": "infinite",
               "dithering": False, "keepAlpha": True}
-    allowed = set(enabled) if enabled is not None else set(MAP_KEYS) | {OPACITY}
-    present = set(present_pbr) & allowed
+    present = set(present_pbr)
     doc_maps = doc_maps or {}
 
     def rgb(map_type, name):
@@ -111,7 +115,7 @@ def build_export_maps(material_hash, present_pbr, normal_map_format="opengl", ex
         channels["albedo"] = rgb("documentMap", "baseColor")
         if OPACITY in present:
             channels["albedo"].append({"srcMapType": "documentMap", "srcMapName": "opacity", "srcChannel": "L", "destChannel": "A"})
-    if "normal" in allowed and ("normal" in present_pbr or "height" in present_pbr):
+    if "normal" in present or "height" in present:
         virtual = "Normal_DirectX" if normal_map_format == "directx" else "Normal_OpenGL"
         channels["normal"] = rgb("virtualMap", virtual)
     for m in PBR_MAPS:
@@ -241,6 +245,7 @@ class RemixConnectorPlugin(QObject):
         self._ping_in_flight = False
         self._event_handlers = []
         self._connect_painter_events()
+        self._register_shelf()
 
     # --- Worker lifecycle ---
     def _get_ui_parent(self):
@@ -854,7 +859,7 @@ class RemixConnectorPlugin(QObject):
     def _pull_pick_mesh(self, result, material_prim):
         """The mesh to build the project from, plus a note for the user."""
         if self.settings.get("use_simple_tiling_mesh_on_pull", False):
-            return self._tiling_mesh_path(), "It uses the tiling plane (Settings > Project)."
+            return self._tiling_mesh_path(), "It uses the tiling plane (Settings > General)."
         files = result["mesh_files"]
         if not files:
             return self._tiling_mesh_path(), "No mesh file was found for the selection, so the tiling plane was used."
@@ -966,6 +971,9 @@ class RemixConnectorPlugin(QObject):
             notes.append("The mesh was re-unwrapped in Blender: its UVs no longer match the mesh in Remix, "
                          "so pushed textures only line up after you replace that mesh in Remix.")
         material_name = material_prim.rsplit("/", 1)[-1]
+        # A template the artist chose brings its own shader; only the default one is swapped
+        # for the RTX Remix preview shader (the same shader plus Remix's extra maps).
+        uses_default_template = not template or os.path.basename(template) == DEFAULT_TEMPLATE_NAME
 
         # Painter computes for a moment after creating a project; shader and layer edits must wait.
         self._awaiting_project = True
@@ -975,7 +983,7 @@ class RemixConnectorPlugin(QObject):
                 return
             self._awaiting_project = False
             try:
-                if self.settings.get("use_remix_preview_shader", True):
+                if uses_default_template:
                     self._apply_remix_shader()
                 if not self.settings.get("auto_import_textures_on_pull", True):
                     notes.insert(0, f"Project created and linked to {material_name}.")
@@ -998,7 +1006,7 @@ class RemixConnectorPlugin(QObject):
 
     def _import_options(self):
         """Settings an import uses, read once on the GUI thread."""
-        return {"normal_format": self.project_normal_format(), "maps": enabled_maps(self.settings)}
+        return {"normal_format": self.project_normal_format()}
 
     def _import_start(self, material_prim, adjust_resolution=False, notes=None):
         options = self._import_options()
@@ -1011,7 +1019,7 @@ class RemixConnectorPlugin(QObject):
         )
 
     def _import_fetch(self, material_prim, options=None, progress_callback=None, status_callback=None):
-        options = options or {"normal_format": self._normal_map_format(), "maps": enabled_maps(self.settings)}
+        options = options or {"normal_format": self._normal_map_format()}
         project = self._require_remix_project(status_callback)
         if status_callback: status_callback.emit("Fetching material textures...")
         textures, err = self.remix_api.get_material_textures(material_prim)
@@ -1023,7 +1031,7 @@ class RemixConnectorPlugin(QObject):
         for usd_attr, tex_path_raw in textures or []:
             input_name = str(usd_attr).split(':')[-1].lower()
             pbr_type = REMIX_ATTR_SUFFIX_TO_PBR_MAP.get(input_name)
-            if not pbr_type or pbr_type in seen or not tex_path_raw or pbr_type not in options["maps"]:
+            if not pbr_type or pbr_type in seen or not tex_path_raw:
                 continue
             abs_path = os.path.normpath(str(tex_path_raw))
             if not os.path.isabs(abs_path):
@@ -1105,7 +1113,7 @@ class RemixConnectorPlugin(QObject):
                     _bump_progress()
 
         albedo = dict(processed).get("albedo")
-        if albedo and OPACITY in options["maps"]:
+        if albedo:
             try:
                 stem = os.path.splitext(os.path.basename(albedo))[0]
                 opacity = self.texture_processor.extract_alpha(albedo, os.path.join(dest_dir, f"{stem}_opacity.png"))
@@ -1156,11 +1164,12 @@ class RemixConnectorPlugin(QObject):
             self.log_warning(f"Import: {err}")
         if not assigned:
             raise RemixError("No textures could be applied: " + "; ".join(errors or skipped or ["unknown error"]))
-        if self.settings.get("use_remix_preview_shader", True) and any(is_extended(p) for p in assigned):
-            # Show the imported anisotropy/subsurface maps in the viewport.
-            shader_note = self._apply_remix_shader(stack)
-            if shader_note:
-                info.append(shader_note)
+        if "thickness" in assigned:
+            self._sync_thickness_slot(stack)
+        if any(is_extended(p) for p in assigned):
+            hint = self._preview_shader_hint()
+            if hint:
+                info.append(hint)
         parts = [f"Imported {len(assigned)} texture{'s' if len(assigned) != 1 else ''} from {material_name} "
                  "into a new fill layer."] + info
         problems = skipped + errors
@@ -1174,16 +1183,7 @@ class RemixConnectorPlugin(QObject):
             return self.display_message("Open a Painter project first.", level="notice")
         if not self._begin_operation("Link to Remix Material"):
             return
-        self._start_worker(self._read_selected_materials, on_result=lambda mats: self._apply_relink(mats, push=False),
-                           title="Link to Remix Material")
-
-    def handle_relink_and_push_to_remix(self):
-        if not self.painter_controller.is_project_open():
-            return self.display_message("Open a Painter project first.", level="notice")
-        if not self._begin_operation("Force Push to Remix"):
-            return
-        self._start_worker(self._read_selected_materials, on_result=lambda mats: self._apply_relink(mats, push=True),
-                           title="Force Push to Remix")
+        self._start_worker(self._read_selected_materials, on_result=self._apply_relink, title="Link to Remix Material")
 
     def _read_selected_materials(self, progress_callback=None, status_callback=None):
         self._require_remix_project(status_callback)
@@ -1195,16 +1195,13 @@ class RemixConnectorPlugin(QObject):
             raise RemixError("Select a mesh or material in the RTX Remix viewport first.")
         return selection["materials"]
 
-    def _apply_relink(self, materials, push):
+    def _apply_relink(self, materials):
         material_prim = self._choose_material(materials, "Link to Remix Material")
         if not material_prim:
             return self._finish_operation("Cancelled.", level="status")
         self._write_link(material_prim, relink=True)
         material_name = material_prim.rsplit("/", 1)[-1]
-        if not push:
-            return self._finish_operation(f"Project linked to {material_name}.")
-        self.log_info(f"Relinked to {material_prim}; force pushing with new file names.")
-        self._push_start(self.read_link(), force_new_root=True)
+        self._finish_operation(f"Project linked to {material_name}. Push to Remix sends this project's textures to it.")
 
     # --- Push ---
     def handle_push_to_remix(self):
@@ -1213,7 +1210,7 @@ class RemixConnectorPlugin(QObject):
             return self.display_message("Open a project linked to Remix first (Pull from Remix, or Link to Selected Remix Material).", level="notice")
         if not self._begin_operation("Push to Remix"):
             return
-        self._push_start(link, force_new_root=False)
+        self._push_start(link)
 
     def _push_options(self, normal_format=None):
         """Settings a push uses, read once when it starts. The normal map is
@@ -1222,20 +1219,18 @@ class RemixConnectorPlugin(QObject):
         s = self.settings
         return {
             "normal_format": normal_format or self._normal_map_format(),
-            "maps": enabled_maps(s),
-            "export_format": s.get("export_file_format", "png"),
             "restore_aspect": bool(s.get("restore_original_aspect_ratio_on_export", True)),
             "output_subfolder": s.get("remix_output_subfolder", "Textures/PainterConnector_Ingested"),
         }
 
-    def _push_start(self, link, force_new_root):
+    def _push_start(self, link):
         if not link or not link.get("material_hash"):
             raise RemixError("The project link has no material hash. Use Link to Selected Remix Material.")
         options = self._push_options(self.project_normal_format(link))
         self.log_info(f"Pushing to {link['material_prim']} with {NORMAL_FORMAT_NAMES[options['normal_format']]} normals.")
         self._start_worker(
             self._push_preflight, link["material_prim"],
-            on_result=lambda preflight: self._push_export(preflight, link, force_new_root, options),
+            on_result=lambda preflight: self._push_export(preflight, link, options),
             title="Push to Remix",
         )
 
@@ -1257,15 +1252,14 @@ class RemixConnectorPlugin(QObject):
         return {"project": project, "output_dir": output_dir, "edit_target": edit_target,
                 "shader_path": shader_path, "textures": textures or []}
 
-    def _push_export(self, preflight, link, force_new_root, options):
+    def _push_export(self, preflight, link, options):
         """GUI thread: Painter's export API must run here."""
-        export_path = self.settings.get("painter_export_path") or os.path.join(tempfile.gettempdir(), "RemixConnector_Export")
-        os.makedirs(export_path, exist_ok=True)
+        os.makedirs(EXPORT_DIR, exist_ok=True)
         self.display_message("Exporting textures...", level="status")
-        exported, notes = self._export_textures(export_path, link["material_hash"], options)
+        exported, notes = self._export_textures(EXPORT_DIR, link["material_hash"], options)
         original_size = (link.get("original_width"), link.get("original_height"))
         self._start_worker(
-            self._push_ingest, exported, preflight, link, force_new_root, original_size, options,
+            self._push_ingest, exported, preflight, link, original_size, options,
             on_result=lambda summary: self._push_done(summary, notes),
             title="Push to Remix",
         )
@@ -1292,12 +1286,10 @@ class RemixConnectorPlugin(QObject):
             notes.append(f"Only the active texture set '{ts_name}' was pushed.")
 
         present = self.painter_controller.present_pbr_types(stack)
-        doc_maps = self.painter_controller.document_map_names(stack, present & options["maps"])
-        maps, stems = build_export_maps(material_hash, present, options["normal_format"], options["export_format"],
-                                        enabled=options["maps"], doc_maps=doc_maps)
+        doc_maps = self.painter_controller.document_map_names(stack, present)
+        maps, stems = build_export_maps(material_hash, present, options["normal_format"], doc_maps=doc_maps)
         if not maps:
-            raise RemixError(f"Texture set '{ts_name}' has no channels Remix can use (or they're switched off in "
-                             "Settings > Texture Maps).")
+            raise RemixError(f"Texture set '{ts_name}' has no channels Remix can use.")
 
         def _export(export_maps):
             """(result, None) on success, (None, error) on failure."""
@@ -1346,7 +1338,7 @@ class RemixConnectorPlugin(QObject):
             raise RemixError("Painter exported no textures.")
         return exported, notes
 
-    def _push_ingest(self, exported, preflight, link, force_new_root, original_size, options=None,
+    def _push_ingest(self, exported, preflight, link, original_size, options=None,
                      progress_callback=None, status_callback=None):
         """Worker: resize, ingest, update the material and save the Remix layer."""
         options = options or self._push_options()
@@ -1363,9 +1355,6 @@ class RemixConnectorPlugin(QObject):
             except Exception as e:
                 failed["anisotropy"] = f"could not convert it to Remix's range: {e}"
                 del exported["anisotropy"]
-
-        if force_new_root:
-            exported = self._rename_for_force_push(exported, link, remix_out_dir, options["output_subfolder"], failed)
 
         items = [(pbr, exported[pbr]) for pbr in _PUSH_ORDER if pbr in exported]
         total = len(items)
@@ -1476,34 +1465,6 @@ class RemixConnectorPlugin(QObject):
             except Exception as e:
                 self.log_warning(f"Failed to resize {os.path.basename(path)}: {e}")
 
-    def _rename_for_force_push(self, exported, link, remix_out_dir, output_subfolder, failed):
-        """Copy exports to a file root that doesn't collide with earlier ingests.
-
-        A map that can't be copied is reported in ``failed`` rather than pushed
-        under its old name, which could overwrite an earlier ingest.
-        """
-        if not exported:
-            return exported
-        ingest_dir_abs = os.path.normpath(os.path.join(remix_out_dir, str(output_subfolder).strip("/\\")))
-        desired_root = link.get("material_hash") or "ForcePush"
-        try:
-            forced_root = self.texture_processor.choose_non_overwriting_root(desired_root, ingest_dir_abs)
-        except Exception as e:
-            raise RemixError(f"Force Push couldn't pick new file names: {e}")
-        if not forced_root or forced_root == desired_root:
-            return exported
-        self.log_debug(f"ForcePush root chosen: desired={desired_root} forced={forced_root} ingestDir={ingest_dir_abs}")
-        temp_root = os.path.dirname(next(iter(exported.values())))
-        renamed = {}
-        for pbr, path in exported.items():
-            new_path, err = self.texture_processor.copy_texture_with_forced_root(
-                path, f"{forced_root}_{EXPORT_FILE_SUFFIX.get(pbr, pbr)}", pbr, temp_root)
-            if new_path:
-                renamed[pbr] = new_path
-            else:
-                failed[pbr] = err or "couldn't copy it under a new file name"
-        return renamed
-
     def _push_done(self, summary, notes):
         material_name = summary["material_prim"].rsplit("/", 1)[-1]
         normal_name = NORMAL_FORMAT_NAMES.get(summary.get("normal_format"), "")
@@ -1535,9 +1496,10 @@ class RemixConnectorPlugin(QObject):
                            title="Show in Remix", show_progress=False)
 
     # --- Channels ---
-    def handle_add_channels(self):
-        """Add the Painter channel of every map switched on in Settings that the
-        active texture set lacks, so the extra Remix maps can be painted."""
+    def handle_add_channels(self, group):
+        """Add the Painter channels for a group of Remix maps whose channel isn't
+        obvious (CHANNEL_GROUPS: anisotropy, subsurface). Standard channels are
+        added in Painter's Texture Set Settings as usual."""
         if not self.painter_controller.is_project_open():
             return self.display_message("Open a Painter project first.", level="notice")
         if self._operation:
@@ -1545,75 +1507,72 @@ class RemixConnectorPlugin(QObject):
         stack = self.painter_controller.active_stack()
         if stack is None:
             return self.display_message("The project has no texture set.", level="notice")
-        maps = enabled_maps(self.settings)
         present = self.painter_controller.present_pbr_types(stack)
-        wanted = [k for k in (*MAP_KEYS, OPACITY) if k in maps and k not in present]
-        if OPACITY in wanted and "albedo" not in maps:
-            wanted.remove(OPACITY)
+        wanted = [k for k in CHANNEL_GROUPS[group] if k not in present]
         added = [k for k in wanted if self.painter_controller.ensure_channel(stack, k)]
         failed = [k for k in wanted if k not in added]
-        names = lambda keys: ", ".join(MAPS_BY_KEY[k].painter_label if k in MAPS_BY_KEY else "Opacity" for k in keys)
+        names = lambda keys: ", ".join(MAPS_BY_KEY[k].painter_label for k in keys)
         if not wanted:
-            message = "The texture set already has a channel for every map switched on in Settings > Texture Maps."
+            message = f"The texture set already has {names(CHANNEL_GROUPS[group])}."
         else:
-            message = f"Added channels: {names(added)}." if added else "No channels were added."
+            message = f"Added {names(added)}." if added else "No channels were added."
         if failed:
             message += f" Couldn't add: {names(failed)} (see the log)."
-        if self.settings.get("use_remix_preview_shader", True):
-            shader_note = self._apply_remix_shader(stack)
-            if shader_note:
-                message += f" {shader_note}"
+        if "thickness" in added:
+            self._sync_thickness_slot(stack)
+        hint = self._preview_shader_hint()
+        if hint:
+            message += f" {hint}"
         self._emit_state()
         self.display_message(message, level="warning" if failed else "notice")
 
     # --- Viewport shader ---
+    def _register_shelf(self):
+        """Painter lists the plugin's shelf (the RTX Remix preview shader) in its own
+        pickers, e.g. Shader Settings. GUI thread; retried once if Painter's
+        resource service isn't up yet."""
+        try:
+            self.painter_controller.register_shelf()
+        except Exception as e:
+            if not getattr(self, "_shelf_retry", False) and QtCore is not None:
+                self._shelf_retry = True
+                # The plugin is the timer's context, so the retry is dropped if it shuts down first.
+                QtCore.QTimer.singleShot(3000, self, self._register_shelf)
+            else:
+                self.log_warning(f"Couldn't add the {PLUGIN_NAME} shelf: {e}")
+
     def _apply_remix_shader(self, stack=None):
         """Use the RTX Remix preview shader so Painter's viewport shows every Remix
-        map. GUI thread only. Returns a note for the user, or "" when nothing
-        changed. Never raises: the viewport is a convenience, not part of the push."""
+        map (Pull does this for projects from the default template). GUI thread
+        only. Never raises: the viewport is a convenience, not part of the push."""
         try:
             stack = stack if stack is not None else self.painter_controller.active_stack()
-            switched = self.painter_controller.use_remix_shader(stack)
+            if self.painter_controller.use_remix_shader(stack):
+                self.log_info("Viewport shader set to the RTX Remix preview shader.")
         except Exception as e:
             self.log_warning(f"Couldn't switch to the RTX Remix preview shader: {e}")
-            return "The RTX Remix preview shader couldn't be applied (see the log)."
-        if not switched:
-            return ""
-        self.log_info("Viewport shader set to the RTX Remix preview shader.")
-        return "The viewport now uses the RTX Remix preview shader, which shows every Remix map."
 
-    def handle_use_remix_shader(self):
-        if not self.painter_controller.is_project_open():
-            return self.display_message("Open a Painter project first.", level="notice")
-        note = self._apply_remix_shader()
-        self.display_message(note or "This project already uses the RTX Remix preview shader.", level="notice")
+    def _sync_thickness_slot(self, stack):
+        """Tell the preview shader which User channel holds the thickness map. Never raises."""
+        try:
+            self.painter_controller.sync_thickness_slot(stack)
+        except Exception as e:
+            self.log_warning(f"Couldn't point the preview shader at the Remix Thickness channel: {e}")
+
+    def _preview_shader_hint(self):
+        """Where to find the preview shader, when the project uses another one."""
+        try:
+            if self.painter_controller.uses_remix_shader():
+                return ""
+        except Exception:
+            return ""
+        return "To see them in the viewport, pick rtx-remix-preview in Shader Settings."
 
     # --- Settings / diagnostics / about ---
     def handle_settings(self):
-        def _test_connection(candidate_settings):
-            tmp_client = None
-            try:
-                candidate = sanitize_settings(candidate_settings or {}, PLUGIN_DIR)
-                tmp_client = RemixAPIClient(lambda: candidate, self.logger_adapter)
-                return tmp_client.ping(timeout=2.0)
-            except Exception as e:
-                return False, str(e)
-            finally:
-                # Each ping creates a requests.Session under the hood; close it.
-                if tmp_client is not None:
-                    try:
-                        tmp_client.close()
-                    except Exception:
-                        pass
-
         # Every change is saved as it happens (update_settings), so closing needs no OK.
-        dialog = create_settings_dialog_instance(
-            self,
-            self._get_ui_parent(),
-            test_connection_fn=_test_connection,
-            log_file_path=self._log_file_path,
-            add_channels_fn=self.handle_add_channels,
-        )
+        # A new Remix address re-checks the connection, shown live in the panel.
+        dialog = create_settings_dialog_instance(self, self._get_ui_parent())
         try:
             dialog.exec()
         finally:
@@ -1686,15 +1645,13 @@ class RemixConnectorPlugin(QObject):
             "",
             "Key settings:",
             f"  normal_map_format (new projects): {s.get('normal_map_format')}",
-            f"  texture maps on: {', '.join(k for k in (*MAP_KEYS, OPACITY) if k in enabled_maps(s))}",
-            f"  use_remix_preview_shader: {s.get('use_remix_preview_shader')}",
             f"  project_texture_resolution: {s.get('project_texture_resolution')}",
             f"  auto_import_textures_on_pull: {s.get('auto_import_textures_on_pull')}",
             f"  use_simple_tiling_mesh_on_pull: {s.get('use_simple_tiling_mesh_on_pull')}",
             f"  auto_unwrap_with_blender_on_pull: {s.get('auto_unwrap_with_blender_on_pull')}",
             f"  restore_original_aspect_ratio_on_export: {s.get('restore_original_aspect_ratio_on_export')}",
-            f"  painter_export_path: {s.get('painter_export_path')}",
             f"  remix_output_subfolder: {s.get('remix_output_subfolder')}",
+            f"  export folder (intermediate): {EXPORT_DIR}",
             "",
         ]
 
@@ -1805,7 +1762,7 @@ def teardown():
     plugin_instance = None
 
 
-def _safe_call(handler_name):
+def _safe_call(handler_name, *args):
     inst = plugin_instance
     if inst is None:
         print(f"[{PLUGIN_NAME}] Plugin not initialized; ignoring '{handler_name}'.")
@@ -1816,7 +1773,7 @@ def _safe_call(handler_name):
         return
     running_before = inst.current_operation
     try:
-        handler()
+        handler(*args)
     except Exception as e:
         if not isinstance(e, RemixError):
             inst.log_error(f"{handler_name} failed: {e}", exc_info=True)
@@ -1830,11 +1787,10 @@ def _safe_call(handler_name):
 def handle_pull_from_remix(): _safe_call('handle_pull_from_remix')
 def handle_import_textures(): _safe_call('handle_import_textures')
 def handle_push_to_remix(): _safe_call('handle_push_to_remix')
-def handle_relink_and_push_to_remix(): _safe_call('handle_relink_and_push_to_remix')
 def handle_link_to_selection(): _safe_call('handle_link_to_selection')
 def handle_select_in_remix(): _safe_call('handle_select_in_remix')
-def handle_add_channels(): _safe_call('handle_add_channels')
-def handle_use_remix_shader(): _safe_call('handle_use_remix_shader')
+def handle_add_anisotropy_channels(): _safe_call('handle_add_channels', 'anisotropy')
+def handle_add_subsurface_channels(): _safe_call('handle_add_channels', 'subsurface')
 def handle_settings(): _safe_call('handle_settings')
 def handle_diagnostics(): _safe_call('handle_diagnostics')
 def handle_open_log_folder(): _safe_call('handle_open_log_folder')

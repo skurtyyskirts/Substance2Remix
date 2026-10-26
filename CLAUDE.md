@@ -10,21 +10,38 @@ Painter ignores because it has no `__init__.py`.
 | File | Purpose |
 |------|-------|
 | `__init__.py` | Painter entry points (`start_plugin`/`close_plugin`); menu, dock panel, submodule reload on "Reload plugin" |
-| `core.py` | `RemixConnectorPlugin`: operations (pull, import, push, force push, link, show, add channels, preview shader), settings API, worker plumbing, diagnostics |
+| `core.py` | `RemixConnectorPlugin`: operations (pull, import, push, link, show, add channels), shelf registration, settings API, worker plumbing, diagnostics |
 | `pbr_maps.py` | **The one table of texture maps**: Remix input, ingest type, suffix, Painter channel names/format, export name, DDS encoding. Everything else derives from it |
 | `remix_api.py` | `RemixAPIClient` REST client for the RTX Remix Toolkit + path helpers |
-| `painter_controller.py` | Painter API wrapper: channels (incl. labelled User channels), resolution, fill layers (main thread only) |
+| `painter_controller.py` | Painter API wrapper: channels (incl. labelled User channels), resolution, fill layers, shelf + preview shader (main thread only) |
 | `texture_processor.py` | texconv DDS→PNG, Remix normal decode (Pillow), anisotropy remap, resize, Blender unwrap launcher |
 | `ui_panel.py` | Dock panel (connection, link, normals, actions) + plugin icon |
 | `async_utils.py` | `QRunnable` worker + signals |
-| `settings_schema.py` | Settings defaults, sanitizing/migration, `PRESET_KEYS`, `user_config_dir()` |
+| `settings_schema.py` | Settings defaults, sanitizing/migration (`_RETIRED_KEYS`), `user_config_dir()` |
 | `settings_store.py` | `SettingsStore`: autosaved `settings.json` in `%APPDATA%\Substance2Remix\`, legacy migration, `.bak` for unreadable files |
-| `settings_dialog.py` | Autosaving settings dialog (no OK/Cancel, no presets) with a Texture Maps tab |
-| `assets/shaders/rtx-remix-preview.glsl` | Painter viewport shader previewing every Remix map (see "Preview shader") |
+| `settings_dialog.py` | Autosaving settings dialog: General, Push, Blender, Advanced (no OK/Cancel, no presets) |
+| `shelf/shaders/rtx-remix-preview.glsl` | Painter viewport shader previewing every Remix map, on the plugin's shelf (see "Preview shader") |
 | `diagnostics_dialog.py` | Diagnostics text dialog |
 | `dependency_manager.py` | Puts `_vendor/` (requests, Pillow) on `sys.path` |
 | `blender_auto_unwrap.py` | Runs inside Blender (`--background`); Smart UV Project |
 | `plugin_info.py` | Name/version constants |
+
+## Design rules
+
+Don't rebuild a control Painter or Remix already has. Artists expect these choices in those apps:
+- **What's pushed** = the channels in the texture set (Painter's Texture Set Settings). No per-map
+  switches. Import brings every map the material has. Opacity always rides in the albedo alpha.
+- **Whether Remix uses a map** (Enable Emission, alpha state, Inwards Displacement) is set on the
+  Remix material. Push assigns textures; it never changes material parameters.
+- **The viewport shader** is picked in Shader Settings. The plugin only applies its shader when Pull
+  creates a project from the default template; elsewhere it adds a hint to the message, never switches.
+- **Add Remix Channels** only covers the maps without an obvious Painter channel (`CHANNEL_GROUPS`:
+  anisotropy, subsurface). Standard channels are added in Texture Set Settings.
+- **Settings** are what Pull needs in place of Painter's New Project dialog, push placement, the
+  Blender unwrap and connection basics. No presets, no export format/folder (push exports PNGs to
+  `core.EXPORT_DIR`; Remix converts to DDS), no tool-path fields (texconv is bundled; custom
+  `texconv_path`/`blender_unwrap_script_path` in `settings.json` are still honoured).
+- Retiring a setting: add its key to `settings_schema._RETIRED_KEYS` and bump `SETTINGS_VERSION`.
 
 ## Threading rules
 
@@ -107,15 +124,23 @@ and 5xx retry. Do NOT add direct `requests` calls outside `make_request()`.
   angle 0 = tangent, like Remix) and a subsurface approximation from `channel_absorptioncolor`
   (TransmissionColor), `channel_scatteringcolor` (SubsurfaceColor) and `channel_user0..3`
   (thickness; `remixThicknessChannel` picks the slot). Without those channels it is pixel-identical.
-- Painter's Python API has no shader functions; `PainterController.use_remix_shader` imports the
-  .glsl as a project resource (`resource.import_project_resource(..., Usage.SHADER)`) and calls the
-  JS API through `substance_painter.js.evaluate`: `alg.shaders.instances()`,
+- The shader lives on the plugin's shelf (`shelf/`, name `substance2remix`). `_register_shelf`
+  adds it at startup with `resource.Shelves.add` (session-only, so every start re-adds it; one
+  retry after 3 s). Painter crawls it in milliseconds but `resource.search` only finds it about
+  10 s later; `_remix_shader_url` falls back to `import_project_resource(..., Usage.SHADER)` until then.
+- Painter's Python API has no shader functions; `PainterController.use_remix_shader` calls the JS API
+  through `substance_painter.js.evaluate`: `alg.shaders.instances()`,
   `alg.shaders.updateShaderInstance(id, url)`, `alg.shaders.setParameters(id, {...})`.
-  `js.evaluate` returns parsed JSON.
+  `js.evaluate` returns parsed JSON. `sync_thickness_slot` updates `remixThicknessChannel` on
+  instances already using the shader (after Add Remix Channels or an import adds thickness).
 - Verified in Painter 12.2 (startup-script harness: a module in
-  `Documents/.../python/startup/` runs at launch; delete it afterwards): "Creation of the shader
-  rtx-remix-preview successful", parameters live, and all ten Remix maps export with the runtime
-  documentMap names (`specularroughnessanisotropy`, `transmissioncolor`, `user0`, `subsurfacecolor`).
+  `Documents/.../python/startup/` runs at launch; delete it afterwards):
+  - "Creation of the shader rtx-remix-preview successful", with live parameters.
+  - Search finds `resource://substance2remix/rtx-remix-preview?...`, and the switch uses that URL.
+  - A saved `.spp` reopens with the shader after the shelf is removed: Painter embeds it
+    (`resource://restored_from_cache1/...`).
+  - All ten Remix maps export with the runtime documentMap names (`specularroughnessanisotropy`,
+    `transmissioncolor`, `user0`, `subsurfacecolor`).
 
 ## Painter channels
 

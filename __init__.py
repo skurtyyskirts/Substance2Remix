@@ -25,18 +25,21 @@ _SUBMODULES = (
     "diagnostics_dialog", "ui_panel", "core",
 )
 
-# (label, core handler, tooltip); None draws a separator.
+# (label, core handler, tooltip); None draws a separator. A list of entries
+# in place of the handler makes a submenu.
 _MENU = (
     ("Pull from Remix", "handle_pull_from_remix", "Create a project from the mesh and material selected in RTX Remix."),
     ("Import Textures from Remix", "handle_import_textures", "Add the linked material's textures as a fill layer."),
     None,
     ("Push to Remix", "handle_push_to_remix", "Export, ingest and assign textures to the linked Remix material."),
-    ("Force Push to Selected Material", "handle_relink_and_push_to_remix", "Relink to the Remix selection and push under new file names."),
     None,
     ("Link to Selected Remix Material", "handle_link_to_selection", "Link this project to the material selected in Remix."),
     ("Show Linked Material in Remix", "handle_select_in_remix", "Select the linked material in RTX Remix."),
-    ("Add Remix Channels to Texture Set", "handle_add_channels", "Add the channels for every Remix map switched on in Settings (anisotropy, subsurface, ...)."),
-    ("Use RTX Remix Preview Shader", "handle_use_remix_shader", "Switch the viewport to a shader that shows every Remix map, including anisotropy and subsurface."),
+    ("Add Remix Channels", [
+        ("Anisotropy", "handle_add_anisotropy_channels", "Add the Specular Anisotropy channel (Remix anisotropy)."),
+        ("Subsurface", "handle_add_subsurface_channels",
+         "Add Transmission Color, a \"Remix Thickness\" User channel and Subsurface Color (Remix subsurface)."),
+    ], "Add the channels for Remix maps that have no obvious Painter channel."),
     None,
     ("Settings...", "handle_settings", None),
     ("Diagnostics...", "handle_diagnostics", None),
@@ -68,33 +71,43 @@ def _load_core_module():
         return False
 
 
-def create_plugin_actions():
-    """
-    Creates the QAction objects for the plugin menu.
-    """
-    global remix_actions
-    remix_actions = []
-
+def _make_action(text, handler_name, tooltip):
     from .qt_utils import QAction
     from .ui_panel import plugin_icon
 
+    handler = getattr(remix_core, handler_name, None)
+    if not callable(handler):
+        print(f"[{PLUGIN_NAME}] ERROR: Handler '{handler_name}' missing.")
+        return None
+    action = QAction(text, None)
+    if tooltip:
+        action.setToolTip(tooltip)
+        action.setStatusTip(tooltip)
+    if handler_name == "handle_push_to_remix":
+        action.setIcon(plugin_icon())
+    action.triggered.connect(handler)
+    return action
+
+
+def create_plugin_actions():
+    """
+    Creates the QAction objects for the plugin menu. Submenus are kept as
+    (label, tooltip, [actions]).
+    """
+    global remix_actions
+    remix_actions = []
     for entry in _MENU:
         if entry is None:
             remix_actions.append(None)
             continue
-        text, handler_name, tooltip = entry
-        handler = getattr(remix_core, handler_name, None)
-        if not callable(handler):
-            print(f"[{PLUGIN_NAME}] ERROR: Handler '{handler_name}' missing.")
+        text, target, tooltip = entry
+        if isinstance(target, list):
+            actions = [a for a in (_make_action(*sub) for sub in target) if a is not None]
+            remix_actions.append((text, tooltip, actions))
             continue
-        action = QAction(text, None)
-        if tooltip:
-            action.setToolTip(tooltip)
-            action.setStatusTip(tooltip)
-        if handler_name == "handle_push_to_remix":
-            action.setIcon(plugin_icon())
-        action.triggered.connect(handler)
-        remix_actions.append(action)
+        action = _make_action(text, target, tooltip)
+        if action is not None:
+            remix_actions.append(action)
 
 
 def add_actions_to_menu():
@@ -111,6 +124,14 @@ def add_actions_to_menu():
     for action in remix_actions:
         if action is None:
             remix_menu.addSeparator()
+        elif isinstance(action, tuple):
+            text, tooltip, actions = action
+            sub = remix_menu.addMenu(text)
+            sub.setToolTipsVisible(True)
+            if tooltip:
+                sub.menuAction().setToolTip(tooltip)
+            for a in actions:
+                sub.addAction(a)
         else:
             remix_menu.addAction(action)
     substance_painter.ui.add_menu(remix_menu)

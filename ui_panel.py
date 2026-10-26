@@ -92,18 +92,22 @@ class RemixPanel(QtWidgets.QWidget):
             "Push to Remix", handlers.handle_push_to_remix,
             "Export, ingest and assign this project's textures to the linked Remix material.")
         self._push_btn.setDefault(True)
-        self._force_btn = self._action_button(
-            "Force Push to Selected Material", handlers.handle_relink_and_push_to_remix,
-            "Relink to the material selected in Remix and push under new file names (never overwrites earlier ingests).")
         self._link_btn = self._action_button(
             "Link to Selected Material", handlers.handle_link_to_selection,
-            "Link this project to the material selected in Remix without pushing.")
-        self._channels_btn = self._action_button(
-            "Add Remix Channels", handlers.handle_add_channels,
-            "Add the Painter channels for every map switched on in Settings > Texture Maps "
-            "(anisotropy, subsurface, ...) to the active texture set.")
-        for btn in (self._pull_btn, self._import_btn, self._push_btn, self._force_btn, self._link_btn,
-                    self._channels_btn):
+            "Link this project to the material selected in Remix (to push onto a different material, "
+            "link it, then push).")
+        # Only the Remix maps whose Painter channel isn't obvious; standard channels
+        # are added in Painter's Texture Set Settings.
+        self._channels_btn = QtWidgets.QPushButton("Add Remix Channels")
+        self._channels_btn.setToolTip("Add the Painter channels for Remix maps that have no obvious channel.")
+        channels_menu = QtWidgets.QMenu(self._channels_btn)
+        channels_menu.setToolTipsVisible(True)
+        aniso = channels_menu.addAction("Anisotropy", handlers.handle_add_anisotropy_channels)
+        aniso.setToolTip("Specular Anisotropy (Remix anisotropy).")
+        sss = channels_menu.addAction("Subsurface", handlers.handle_add_subsurface_channels)
+        sss.setToolTip('Transmission Color, a "Remix Thickness" User channel and Subsurface Color (Remix subsurface).')
+        self._channels_btn.setMenu(channels_menu)
+        for btn in (self._pull_btn, self._import_btn, self._push_btn, self._link_btn, self._channels_btn):
             root.addWidget(btn)
 
         self._op_label = QtWidgets.QLabel()
@@ -174,7 +178,7 @@ class RemixPanel(QtWidgets.QWidget):
             if not recorded:
                 # Painter's API can't report a project's normal format; only Pull records it.
                 tooltip += ("\n\nThis project wasn't created by Pull, so the convention comes from "
-                            "Settings > Project > Normal Map Format. Pushes are correct either way; for "
+                            "Settings > General > Normal Map Format. Pushes are correct either way; for "
                             "imports, set it to match the project's normal map format.")
             self._normals_label.setText(f"Normals: {fmt}" + ("" if recorded else " (from Settings)"))
             self._normals_label.setToolTip(tooltip)
@@ -187,5 +191,5 @@ class RemixPanel(QtWidgets.QWidget):
         self._pull_btn.setEnabled(not busy)
         for btn in (self._import_btn, self._push_btn, self._show_btn):
             btn.setEnabled(not busy and bool(link))
-        for btn in (self._force_btn, self._link_btn, self._channels_btn):
+        for btn in (self._link_btn, self._channels_btn):
             btn.setEnabled(not busy and project_open)

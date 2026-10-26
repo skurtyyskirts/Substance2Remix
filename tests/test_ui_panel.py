@@ -46,7 +46,7 @@ class _FakePlugin(QtCore.QObject):
 def _handlers():
     return SimpleNamespace(**{name: MagicMock() for name in (
         "handle_select_in_remix", "handle_pull_from_remix", "handle_import_textures", "handle_push_to_remix",
-        "handle_relink_and_push_to_remix", "handle_link_to_selection", "handle_add_channels",
+        "handle_link_to_selection", "handle_add_anisotropy_channels", "handle_add_subsurface_channels",
         "handle_settings", "handle_diagnostics")})
 
 
@@ -68,6 +68,17 @@ class TestRemixPanel(unittest.TestCase):
     def test_panel_has_no_preset_switcher(self):
         panel = self._panel(_FakePlugin())
         self.assertFalse(hasattr(panel, "_preset_combo"))
+
+    def test_channels_button_offers_the_two_groups(self):
+        handlers = _handlers()
+        panel = ui_panel.RemixPanel(_FakePlugin(), handlers)
+        self.addCleanup(panel.stop)
+        self.addCleanup(panel.deleteLater)
+        actions = panel._channels_btn.menu().actions()
+        self.assertEqual([a.text() for a in actions], ["Anisotropy", "Subsurface"])
+        actions[1].trigger()
+        handlers.handle_add_subsurface_channels.assert_called_once()
+        self.assertFalse(hasattr(panel, "_force_push_btn"))
 
     def test_actions_disabled_while_busy(self):
         plugin = _FakePlugin(link={"material_prim": "/RootNode/Looks/mat_A"})
