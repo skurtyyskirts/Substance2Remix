@@ -25,9 +25,10 @@ core = __import__(f"{_PKG_NAME}.core", fromlist=["core"])
 
 _BOUND = (
     "_author_material_group_wrapper", "_pull_pick_mesh", "_tiling_mesh_path", "_pull_fetch",
-    "_push_ingest", "_restore_aspect_ratio", "_rename_for_force_push", "_require_remix_project",
+    "_push_ingest", "_restore_aspect_ratio", "_require_remix_project",
     "_import_fetch", "_texconv_path", "_normal_map_format", "_push_options", "project_normal_format",
-    "_push_done", "handle_add_channels",
+    "_push_done", "handle_add_channels", "_import_assign", "_apply_remix_shader",
+    "_preview_shader_hint", "_sync_thickness_slot", "_apply_relink", "_pull_create_project",
 )
 
 
@@ -168,12 +169,10 @@ class TestBuildExportMaps(unittest.TestCase):
         self.assertEqual(alpha[0]["srcMapName"], "opacity")
         self.assertNotIn("H_Opacity", [m["fileName"] for m in maps])
 
-    def test_switched_off_maps_are_not_exported(self):
-        present = {"albedo", "opacity", "normal", "height", "roughness"}
-        maps, stems = core.build_export_maps("H", present, enabled={"albedo", "height", "roughness"})
-        self.assertEqual(sorted(stems.values()), ["albedo", "height", "roughness"])
-        # Height alone no longer produces a normal map once Normal is off, and opacity stays out of the alpha.
-        self.assertEqual([c["destChannel"] for c in self._channels(maps, "H_Albedo")], ["R", "G", "B"])
+    def test_every_map_is_png_and_height_brings_a_normal(self):
+        maps, stems = core.build_export_maps("H", {"albedo", "height"})
+        self.assertEqual(sorted(stems.values()), ["albedo", "height", "normal"])
+        self.assertEqual({m["parameters"]["fileFormat"] for m in maps}, {"png"})
 
     def test_extended_maps_use_resolved_document_maps(self):
         present = {"anisotropy", "transmittance", "thickness", "single_scattering"}
@@ -223,7 +222,7 @@ class TestPushIngest(unittest.TestCase):
 
     def test_ingests_updates_and_saves(self):
         plugin = self._plugin()
-        summary = plugin._push_ingest({"normal": "n.png", "albedo": "a.png"}, self.preflight, self.link, False, (None, None))
+        summary = plugin._push_ingest({"normal": "n.png", "albedo": "a.png"}, self.preflight, self.link, (None, None))
         self.assertEqual(summary["pushed"], ["albedo", "normal"])
         self.assertTrue(summary["saved"])
         updates = dict(plugin.remix_api.update_textures_batch.call_args[0][0])
@@ -234,7 +233,7 @@ class TestPushIngest(unittest.TestCase):
         # The setting says OpenGL, but this project was created as DirectX: Remix must be told DirectX.
         plugin = self._plugin(normal_map_format="opengl", remix_output_subfolder="Textures/Mine")
         options = plugin._push_options("directx")
-        summary = plugin._push_ingest({"normal": "n.png", "albedo": "a.png"}, self.preflight, self.link, False,
+        summary = plugin._push_ingest({"normal": "n.png", "albedo": "a.png"}, self.preflight, self.link,
                                       (None, None), options)
         for call in plugin.remix_api.ingest_texture.call_args_list:
             self.assertEqual(call.kwargs["normal_map_format"], "directx")
@@ -250,7 +249,7 @@ class TestPushIngest(unittest.TestCase):
     def test_extended_maps_are_assigned_in_their_own_batch(self):
         plugin = self._plugin()
         summary = plugin._push_ingest({"albedo": "a.png", "anisotropy": "an.png", "thickness": "t.png"},
-                                      self.preflight, self.link, False, (None, None))
+                                      self.preflight, self.link, (None, None))
         batches = [dict(c[0][0]) for c in plugin.remix_api.update_textures_batch.call_args_list]
         self.assertEqual(list(batches[0]), ["/RootNode/Looks/mat_H/Shader.inputs:diffuse_texture"])
         self.assertEqual(sorted(batches[1]), ["/RootNode/Looks/mat_H/Shader.inputs:anisotropy_texture",
@@ -263,7 +262,7 @@ class TestPushIngest(unittest.TestCase):
         plugin = self._plugin()
         plugin.remix_api.update_textures_batch.side_effect = [(True, None), (False, "no such input")]
         summary = plugin._push_ingest({"albedo": "a.png", "transmittance": "tr.png"}, self.preflight, self.link,
-                                      False, (None, None))
+                                      (None, None))
         self.assertEqual(summary["pushed"], ["albedo"])
         self.assertIn("no such input", summary["failed"]["transmittance"])
         self.assertTrue(summary["saved"])
@@ -272,13 +271,13 @@ class TestPushIngest(unittest.TestCase):
         plugin = self._plugin()
         plugin.remix_api.update_textures_batch.return_value = (False, "no such input")
         with self.assertRaises(core.RemixError):
-            plugin._push_ingest({"anisotropy": "an.png"}, self.preflight, self.link, False, (None, None))
+            plugin._push_ingest({"anisotropy": "an.png"}, self.preflight, self.link, (None, None))
 
     def test_partial_failure_is_reported_not_fatal(self):
         plugin = self._plugin()
         plugin.remix_api.ingest_texture.side_effect = lambda pbr, path, out, **_: (None, "boom") if pbr == "height" else (f"C:/ing/{pbr}.dds", None)
         plugin.remix_api.save_layer.return_value = (False, "locked")
-        summary = plugin._push_ingest({"albedo": "a.png", "height": "h.png"}, self.preflight, self.link, False, (None, None))
+        summary = plugin._push_ingest({"albedo": "a.png", "height": "h.png"}, self.preflight, self.link, (None, None))
         self.assertEqual(summary["failed"], {"height": "boom"})
         self.assertFalse(summary["saved"])
 
@@ -287,26 +286,8 @@ class TestPushIngest(unittest.TestCase):
         plugin.remix_api.ingest_texture.side_effect = None
         plugin.remix_api.ingest_texture.return_value = (None, "nope")
         with self.assertRaises(core.RemixError):
-            plugin._push_ingest({"albedo": "a.png"}, self.preflight, self.link, False, (None, None))
+            plugin._push_ingest({"albedo": "a.png"}, self.preflight, self.link, (None, None))
         plugin.remix_api.update_textures_batch.assert_not_called()
-
-    def test_force_push_reports_maps_it_could_not_rename(self):
-        plugin = self._plugin(remix_output_subfolder="Textures/Settings")
-        plugin.texture_processor.choose_non_overwriting_root.return_value = "H_1"
-        plugin.texture_processor.copy_texture_with_forced_root.side_effect = (
-            lambda path, root, pbr, tmp: (None, "disk full") if pbr == "normal" else (f"C:/tmp/{root}.png", None))
-        options = plugin._push_options()
-        options["output_subfolder"] = "Textures/Push"
-        summary = plugin._push_ingest({"albedo": "C:/exp/a.png", "normal": "C:/exp/n.png"}, self.preflight,
-                                      self.link, True, (None, None), options)
-        # Never pushed under its old name (that could overwrite an earlier ingest), but reported.
-        self.assertEqual(summary["pushed"], ["albedo"])
-        self.assertEqual(summary["failed"], {"normal": "disk full"})
-        ingested_paths = [c[0][1] for c in plugin.remix_api.ingest_texture.call_args_list]
-        self.assertEqual(ingested_paths, ["C:/tmp/H_1_Albedo.png"])
-        # The collision check looks in the folder this push ingests into.
-        ingest_dir = plugin.texture_processor.choose_non_overwriting_root.call_args[0][1]
-        self.assertTrue(ingest_dir.replace("\\", "/").endswith("Textures/Push"))
 
     def test_aspect_fallback_resolves_relative_albedo_paths(self):
         plugin = _make_plugin()
@@ -420,7 +401,7 @@ class TestImportFetch(unittest.TestCase):
         self.assertEqual(result["textures"], [])
         self.assertIn("file not found", result["notes"][0])
 
-    def test_options_choose_maps_and_normal_convention(self):
+    def test_imports_every_map_with_the_projects_normal_convention(self):
         plugin = _make_plugin({"normal_map_format": "opengl"})
         with tempfile.TemporaryDirectory() as tmp:
             paths = {name: os.path.join(tmp, name) for name in ("H_OTH_Normal.png", "H_rough.png", "H_aniso.png")}
@@ -431,32 +412,141 @@ class TestImportFetch(unittest.TestCase):
                 ("/M/Shader.inputs:reflectionroughness_texture", paths["H_rough.png"]),
                 ("/M/Shader.inputs:anisotropy_texture", paths["H_aniso.png"]),
             ], None)
-            options = {"normal_format": "directx", "maps": {"normal", "anisotropy"}}
+            options = {"normal_format": "directx"}
             with patch.object(core, "PULLED_TEXTURES_DIR", os.path.join(tmp, "pulled")):
                 result = plugin._import_fetch("/RootNode/Looks/mat_H", options)
-        self.assertEqual(sorted(p for p, _ in result["textures"]), ["anisotropy", "normal"])
+        self.assertEqual(sorted(p for p, _ in result["textures"]), ["anisotropy", "normal", "roughness"])
         self.assertFalse(plugin.texture_processor.convert_remix_normal.call_args[1]["target_opengl"])
         plugin.texture_processor.anisotropy_from_remix.assert_called_once()
 
 
+class TestImportAssign(unittest.TestCase):
+    def _plugin(self, assigned, uses_shader=False):
+        plugin = _make_plugin()
+        plugin.painter_controller = MagicMock()
+        plugin.painter_controller.create_fill_layer.return_value = (assigned, [])
+        plugin.painter_controller.uses_remix_shader.return_value = uses_shader
+        return plugin
+
+    def _result(self, textures, notes=()):
+        return {"material_prim": "/RootNode/Looks/mat_A", "textures": textures, "source_size": (0, 0),
+                "notes": list(notes)}
+
+    def test_pull_notes_are_information_not_skipped(self):
+        plugin = self._plugin(["albedo"])
+        plugin._import_assign(self._result([("albedo", "a.png")], ["normal: file not found (n.dds)"]), False,
+                              ["It uses the tiling plane (Settings > General)."])
+        message = plugin._finish_operation.call_args[0][0]
+        self.assertIn("into a new fill layer. It uses the tiling plane (Settings > General).", message)
+        self.assertIn("Skipped: normal: file not found (n.dds)", message)
+        self.assertNotIn("Skipped: It uses", message)
+
+    def test_extended_maps_point_to_the_preview_shader(self):
+        plugin = self._plugin(["albedo", "transmittance"])
+        plugin._import_assign(self._result([("albedo", "a.png"), ("transmittance", "t.png")]), False, [])
+        self.assertIn("pick rtx-remix-preview in Shader Settings", plugin._finish_operation.call_args[0][0])
+        # The artist's shader choice is theirs: an import never switches it.
+        plugin.painter_controller.use_remix_shader.assert_not_called()
+
+    def test_no_hint_for_standard_maps_or_when_the_shader_is_in_use(self):
+        plugin = self._plugin(["albedo"])
+        plugin._import_assign(self._result([("albedo", "a.png")]), False, [])
+        self.assertNotIn("rtx-remix-preview", plugin._finish_operation.call_args[0][0])
+        plugin = self._plugin(["anisotropy"], uses_shader=True)
+        plugin._import_assign(self._result([("anisotropy", "an.png")]), False, [])
+        self.assertNotIn("rtx-remix-preview", plugin._finish_operation.call_args[0][0])
+
+    def test_imported_thickness_is_wired_to_the_preview_shader(self):
+        plugin = self._plugin(["albedo", "thickness"], uses_shader=True)
+        plugin.painter_controller.sync_thickness_slot.side_effect = RuntimeError("js error")
+        plugin._import_assign(self._result([("albedo", "a.png"), ("thickness", "t.png")]), False, [])
+        plugin.painter_controller.sync_thickness_slot.assert_called_once()
+        self.assertIn("Imported 2 textures", plugin._finish_operation.call_args[0][0])
+
+    def test_shader_lookup_failure_never_fails_the_import(self):
+        plugin = self._plugin(["anisotropy"])
+        plugin.painter_controller.uses_remix_shader.side_effect = RuntimeError("js error")
+        plugin._import_assign(self._result([("anisotropy", "an.png")]), False, [])
+        self.assertIn("Imported 1 texture", plugin._finish_operation.call_args[0][0])
+
+
 class TestAddChannels(unittest.TestCase):
-    def test_adds_only_missing_enabled_channels(self):
-        plugin = _make_plugin({"texture_maps": {"anisotropy": False}})
+    def _plugin(self, present, uses_shader=False):
+        plugin = _make_plugin()
         plugin._operation = None
         plugin.painter_controller = MagicMock()
-        plugin.painter_controller.present_pbr_types.return_value = {"albedo", "normal", "roughness", "metallic", "height"}
+        plugin.painter_controller.present_pbr_types.return_value = set(present)
         plugin.painter_controller.ensure_channel.return_value = True
-        plugin.handle_add_channels()
+        plugin.painter_controller.uses_remix_shader.return_value = uses_shader
+        return plugin
+
+    def test_adds_only_the_missing_channels_of_the_group(self):
+        plugin = self._plugin({"albedo", "normal", "transmittance"})
+        plugin.handle_add_channels("subsurface")
         added = [c[0][1] for c in plugin.painter_controller.ensure_channel.call_args_list]
-        self.assertEqual(added, ["emissive", "transmittance", "thickness", "single_scattering", "opacity"])
-        self.assertIn("Added channels", plugin.display_message.call_args[0][0])
+        self.assertEqual(added, ["thickness", "single_scattering"])
+        message = plugin.display_message.call_args[0][0]
+        self.assertIn('Added User channel "Remix Thickness", Subsurface Color.', message)
+        self.assertIn("pick rtx-remix-preview in Shader Settings", message)
+        plugin.painter_controller.use_remix_shader.assert_not_called()
+        # A preview shader already in use reads the new thickness channel.
+        plugin.painter_controller.sync_thickness_slot.assert_called_once()
+
+    def test_existing_channels_are_reported(self):
+        plugin = self._plugin({"albedo", "anisotropy"}, uses_shader=True)
+        plugin.handle_add_channels("anisotropy")
+        plugin.painter_controller.ensure_channel.assert_not_called()
+        self.assertEqual(plugin.display_message.call_args[0][0], "The texture set already has Specular Anisotropy.")
+
+    def test_failed_channels_are_named(self):
+        plugin = self._plugin(set(), uses_shader=True)
+        plugin.painter_controller.ensure_channel.side_effect = lambda stack, key: key != "thickness"
+        plugin.handle_add_channels("subsurface")
+        message = plugin.display_message.call_args[0][0]
+        self.assertIn('Couldn\'t add: User channel "Remix Thickness"', message)
+        self.assertEqual(plugin.display_message.call_args[1]["level"], "warning")
 
     def test_refuses_while_an_operation_runs(self):
         plugin = _make_plugin()
         plugin._operation = "Push to Remix"
         plugin.painter_controller = MagicMock()
-        plugin.handle_add_channels()
+        plugin.handle_add_channels("anisotropy")
         plugin.painter_controller.ensure_channel.assert_not_called()
+
+
+class TestPullShader(unittest.TestCase):
+    """Pull uses the RTX Remix preview shader only with the default template."""
+
+    def _pull(self, template):
+        plugin = _make_plugin({"auto_import_textures_on_pull": False})
+        plugin.painter_controller = MagicMock()
+        plugin.painter_controller.is_project_open.return_value = False
+        plugin._apply_remix_shader = MagicMock()
+        plugin._operation = "Pull from Remix"
+        sp = sys.modules["substance_painter"]
+        with patch.object(plugin, "_resolve_project_template", return_value=template), \
+                patch.object(sp.project, "create"), \
+                patch.object(sp.project, "execute_when_not_busy", side_effect=lambda fn: fn()):
+            plugin._pull_create_project("C:/m.usd", "/RootNode/Looks/mat_H", {})
+        return plugin
+
+    def test_default_template_gets_the_preview_shader(self):
+        self.assertTrue(self._pull(None)._apply_remix_shader.called)
+        self.assertTrue(self._pull(f"C:/shelf/templates/{core.DEFAULT_TEMPLATE_NAME}")._apply_remix_shader.called)
+
+    def test_own_template_keeps_its_shader(self):
+        plugin = self._pull("C:/My Templates/studio.spt")
+        plugin._apply_remix_shader.assert_not_called()
+        self.assertIn("Project created and linked to mat_H.", plugin._finish_operation.call_args[0][0])
+
+
+class TestRelink(unittest.TestCase):
+    def test_link_tells_what_push_will_do(self):
+        plugin = _make_plugin()
+        plugin._choose_material = MagicMock(return_value="/RootNode/Looks/mat_B")
+        plugin._apply_relink(["/RootNode/Looks/mat_B"])
+        plugin._write_link.assert_called_once_with("/RootNode/Looks/mat_B", relink=True)
+        self.assertIn("Project linked to mat_B.", plugin._finish_operation.call_args[0][0])
 
 
 class TestLinkMetadata(unittest.TestCase):

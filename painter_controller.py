@@ -2,7 +2,10 @@
 
 Every function here touches Painter state and must run on the main thread.
 """
+import json
 import math
+import os
+import re
 
 from .pbr_maps import PBR_MAPS, MAPS_BY_KEY, OPACITY
 
@@ -12,6 +15,7 @@ try:
     import substance_painter.project
     import substance_painter.layerstack
     import substance_painter.ui
+    import substance_painter.js
     PAINTER_AVAILABLE = True
 except ImportError:
     PAINTER_AVAILABLE = False
@@ -24,6 +28,17 @@ except ImportError:
     substance_painter.project = MockPainterModule()
     substance_painter.layerstack = MockPainterModule()
     substance_painter.ui = MockPainterModule()
+    substance_painter.js = MockPainterModule()
+
+# The plugin's shelf: Painter lists its contents (the RTX Remix preview shader) in
+# its own resource pickers, e.g. Shader Settings. Registered for the session only.
+SHELF_NAME = "substance2remix"
+SHELF_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shelf")
+# Viewport shader that previews every Remix map (shelf/shaders/rtx-remix-preview.glsl).
+REMIX_SHADER_NAME = "rtx-remix-preview"
+REMIX_SHADER_PATH = os.path.join(SHELF_PATH, "shaders", f"{REMIX_SHADER_NAME}.glsl")
+# User channels the preview shader can read the Remix thickness map from (User0..User3).
+REMIX_SHADER_USER_SLOTS = 4
 
 # Plugin PBR type -> (ChannelType members to try, ChannelFormat used when the channel is created).
 # Painter 12 names channels after OpenPBR and keeps the older names as aliases.
@@ -229,6 +244,77 @@ class PainterController:
         except Exception as e:
             self._log_warning(f"Could not set texture set resolution to {width}x{height}: {e}")
             return False
+
+    # --- Shelf / viewport shader ---
+
+    def register_shelf(self):
+        """Add the plugin's shelf for this session, so the preview shader shows up in
+        Painter's shader picker."""
+        shelves = substance_painter.resource.Shelves
+        if not shelves.exists(SHELF_NAME):
+            shelves.add(SHELF_NAME, SHELF_PATH)
+
+    def _remix_shader_url(self):
+        """URL of the preview shader: the shelf copy when Painter has crawled it,
+        otherwise a copy imported into the project."""
+        try:
+            for res in substance_painter.resource.search(f"s:{SHELF_NAME} u:shader n:{REMIX_SHADER_NAME}") or []:
+                return res.identifier().url()
+        except Exception as e:
+            self._log_warning(f"Shelf search failed ({e}); importing the preview shader into the project.")
+        resource = substance_painter.resource.import_project_resource(
+            REMIX_SHADER_PATH, substance_painter.resource.Usage.SHADER)
+        return resource.identifier().url()
+
+    def shader_instances(self):
+        """The project's shader instances: [{"id", "label", "shader", "url"}, ...]."""
+        return list(substance_painter.js.evaluate("alg.shaders.instances()") or [])
+
+    def uses_remix_shader(self):
+        instances = self.shader_instances()
+        return bool(instances) and all(i.get("shader") == REMIX_SHADER_NAME for i in instances)
+
+    def thickness_user_slot(self, stack):
+        """Index of the User channel holding the Remix thickness map, or -1."""
+        ct = self._find_user_channel(stack, "thickness") if stack is not None else None
+        m = re.search(r"(\d+)$", str(getattr(ct, "name", ct) or ""))
+        return int(m.group(1)) if m else -1
+
+    def use_remix_shader(self, stack):
+        """Switch the project's shader instances to the RTX Remix preview shader
+        and point it at the thickness User channel. Returns how many instances
+        were switched (0 when they already used it).
+        """
+        instances = self.shader_instances()
+        switched = 0
+        url = None
+        for inst in instances:
+            if inst.get("shader") == REMIX_SHADER_NAME:
+                continue
+            if url is None:
+                url = self._remix_shader_url()
+            substance_painter.js.evaluate(
+                f"alg.shaders.updateShaderInstance({int(inst['id'])}, {json.dumps(url)})")
+            switched += 1
+        self._set_thickness_slot(stack, [inst["id"] for inst in instances])
+        return switched
+
+    def sync_thickness_slot(self, stack):
+        """Point the instances already using the preview shader at the thickness
+        User channel (after it was added or imported). Other shaders are left alone."""
+        ids = [inst["id"] for inst in self.shader_instances() if inst.get("shader") == REMIX_SHADER_NAME]
+        if ids:
+            self._set_thickness_slot(stack, ids)
+
+    def _set_thickness_slot(self, stack, instance_ids):
+        slot = self.thickness_user_slot(stack)
+        if slot >= REMIX_SHADER_USER_SLOTS:
+            self._log_warning(f"The Remix Thickness map is in User{slot}; the preview shader only reads "
+                              f"User0-User{REMIX_SHADER_USER_SLOTS - 1}, so it isn't previewed.")
+            slot = -1
+        params = json.dumps({"remixThicknessChannel": slot})
+        for inst_id in instance_ids:
+            substance_painter.js.evaluate(f"alg.shaders.setParameters({int(inst_id)}, {params})")
 
     # --- Layers ---
 

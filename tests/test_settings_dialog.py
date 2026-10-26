@@ -37,24 +37,6 @@ class _Controller:
     def reset_settings(self):
         return self.store.reset_to_defaults()
 
-    def preset_names(self):
-        return self.store.preset_names()
-
-    def active_preset(self):
-        return self.store.active_preset
-
-    def preset_modified(self):
-        return self.store.is_modified()
-
-    def save_preset(self, name):
-        return self.store.save_preset(name)
-
-    def apply_preset(self, name):
-        return self.store.apply_preset(name)
-
-    def delete_preset(self, name):
-        return self.store.delete_preset(name)
-
 
 class TestSettingsDialog(unittest.TestCase):
     def setUp(self):
@@ -78,64 +60,39 @@ class TestSettingsDialog(unittest.TestCase):
         self.assertEqual(SettingsStore(".", config_dir=self.tmp.name).load()["normal_map_format"], "directx")
 
     def test_closing_flushes_a_pending_change(self):
-        self.dialog.map_checks["height"].setChecked(False)
+        self.dialog.restore_aspect.setChecked(False)
+        self.assertTrue(self.dialog._save_timer.isActive())
         self.dialog.close_btn.click()
-        self.assertFalse(self.controller.store.settings["texture_maps"]["height"])
+        self.assertFalse(self.controller.store.settings["restore_original_aspect_ratio_on_export"])
 
     def test_closing_saves_a_typed_field_without_editing_finished(self):
         self.dialog.remix_output_subfolder.setText("Textures/Typed")  # setText emits no editingFinished
         self.dialog.reject()  # window close button
         self.assertEqual(self.controller.store.settings["remix_output_subfolder"], "Textures/Typed")
 
-    def test_opacity_follows_albedo(self):
-        self.dialog.map_checks["albedo"].setChecked(False)
-        self.assertFalse(self.dialog.map_checks["opacity"].isEnabled())
-        self.dialog.map_checks["albedo"].setChecked(True)
-        self.assertTrue(self.dialog.map_checks["opacity"].isEnabled())
+    def test_tabs(self):
+        tabs = [self.dialog.tabs.tabText(i) for i in range(self.dialog.tabs.count())]
+        self.assertEqual(tabs, ["General", "Push", "Blender", "Advanced"])
 
-    def test_every_remix_map_has_a_toggle(self):
-        self.assertEqual(set(self.dialog.map_checks), set(settings_dialog.MAPS_BY_KEY) | {"opacity"})
+    def test_only_settings_painter_and_remix_do_not_own(self):
+        # Map choice, viewport shader, export format and presets belong to Painter,
+        # Remix or the texture set, so the dialog doesn't offer them.
+        for name in ("preset_combo", "map_checks", "preview_shader", "export_format", "export_path"):
+            self.assertFalse(hasattr(self.dialog, name), name)
 
-    def test_save_as_then_switch_presets(self):
-        with patch.object(QtWidgets.QInputDialog, "getText", return_value=("DirectX props", True)):
-            self.dialog.normal_format.setCurrentIndex(self.dialog.normal_format.findData("directx"))
-            self.dialog._save_preset_as()
-        self.assertEqual(self.dialog.preset_combo.currentData(), "DirectX props")
-        self.assertFalse(self.dialog.preset_save_btn.isEnabled())  # nothing modified yet
+    def test_every_field_round_trips(self):
+        gathered = self.dialog._gather()
+        for key, value in gathered.items():
+            self.assertEqual(self.controller.store.settings[key], value, key)
 
-        self.dialog.normal_format.setCurrentIndex(self.dialog.normal_format.findData("opengl"))
-        self.dialog._commit()
-        self.assertTrue(self.dialog.preset_save_btn.isEnabled())
-        self.assertEqual(self.dialog.preset_state.text(), "Unsaved changes")
-
-        with patch.object(QtWidgets.QInputDialog, "getText", return_value=("OpenGL", True)):
-            self.dialog._save_preset_as()
-        idx = self.dialog.preset_combo.findData("DirectX props")
-        self.dialog.preset_combo.setCurrentIndex(idx)
-        self.dialog._on_preset_chosen(idx)
-        self.assertEqual(self.dialog.normal_format.currentData(), "directx")
-        self.assertEqual(self.controller.store.settings["normal_map_format"], "directx")
-
-    def test_switching_away_from_modified_preset_asks_first(self):
-        self.controller.save_preset("A")
+    def test_restore_defaults_asks_first(self):
         self.controller.update_settings({"normal_map_format": "directx"})
-        self.controller.save_preset("B")
-        self.controller.apply_preset("A")
-        self.controller.update_settings({"project_texture_resolution": 4096})  # modify A
-        self.dialog._refresh_presets()
-        idx = self.dialog.preset_combo.findData("B")
         with patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.No):
-            self.dialog._on_preset_chosen(idx)
-        self.assertEqual(self.controller.active_preset(), "A")
-        self.assertEqual(self.controller.store.settings["project_texture_resolution"], 4096)
-
-    def test_restore_defaults_asks_and_keeps_presets(self):
-        self.controller.update_settings({"normal_map_format": "directx"})
-        self.controller.save_preset("Keep me")
+            self.dialog._reset_defaults()
+        self.assertEqual(self.controller.store.settings["normal_map_format"], "directx")
         with patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.Yes):
             self.dialog._reset_defaults()
         self.assertEqual(self.controller.store.settings["normal_map_format"], "opengl")
-        self.assertEqual(self.controller.preset_names(), ["Keep me"])
         self.assertEqual(self.dialog.normal_format.currentData(), "opengl")
 
 

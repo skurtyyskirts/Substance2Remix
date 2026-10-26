@@ -1,9 +1,7 @@
 import os
 import sys
-import shutil
 import struct
 import subprocess
-import time
 import re
 import ntpath
 
@@ -97,15 +95,6 @@ class TextureProcessor:
         if not path: return ""
         try: return ntpath.basename(str(path))
         except Exception: return str(path)
-
-    @staticmethod
-    def _sanitize_filename_stem(name):
-        if not name: return ""
-        cleaned = str(name).strip()
-        cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", cleaned)
-        cleaned = re.sub(r"\s+", "_", cleaned)
-        cleaned = cleaned.strip(" .")
-        return cleaned[:120]
 
     def _run_texconv(self, command, label):
         self._log_info(f"  Running texconv: {' '.join(command)}")
@@ -299,7 +288,7 @@ class TextureProcessor:
 
         if not blender_exe or not os.path.isfile(blender_exe):
             self._log_error(f"Blender executable invalid: '{blender_exe}'")
-            self._display_message("Auto-unwrap skipped: set the Blender executable in Settings > Paths.")
+            self._display_message("Auto-unwrap skipped: set the Blender path in Settings > Blender.")
             return None
         if not unwrap_script_path:
             self._display_message("Error: Blender unwrap script not found.")
@@ -363,46 +352,3 @@ class TextureProcessor:
             self._log_error(f"Blender execution exception: {e}", exc_info=True)
             self._display_message(f"Error: Blender exception: {e}")
             return None
-
-    def _force_push_root_conflicts(self, root, ingest_dir_abs):
-        if not root or not ingest_dir_abs or not os.path.isdir(ingest_dir_abs): return False
-        root_l = root.lower()
-        try:
-            for fname in os.listdir(ingest_dir_abs):
-                fl = fname.lower()
-                if not fl.endswith((".dds", ".rtex.dds")): continue
-                if not fl.startswith(root_l): continue
-                if fl[len(root_l):len(root_l)+1] in ("", ".", "_", "-"): return True
-        except Exception: pass
-        return False
-
-    def choose_non_overwriting_root(self, desired_root, ingest_dir_abs):
-        desired_root = self._sanitize_filename_stem(desired_root)
-        if not desired_root: return desired_root
-        candidate = desired_root
-        idx = 1
-        while self._force_push_root_conflicts(candidate, ingest_dir_abs):
-            candidate = f"{desired_root}_{idx}"
-            idx += 1
-            if idx > 9999:
-                candidate = f"{desired_root}_{int(time.time())}"
-                break
-        return candidate
-
-    def copy_texture_with_forced_root(self, exported_texture_path, forced_root, pbr_type, temp_export_root):
-        if not exported_texture_path or not os.path.isfile(exported_texture_path):
-            return None, f"Exported texture missing: '{exported_texture_path}'"
-
-        forced_root = self._sanitize_filename_stem(forced_root)
-        if not forced_root: return None, "Forced root name invalid."
-
-        ext = os.path.splitext(exported_texture_path)[1] or ".png"
-        temp_dir = os.path.join(temp_export_root, "_RemixConnector_ForcePush_Renamed", str(pbr_type))
-
-        try:
-            os.makedirs(temp_dir, exist_ok=True)
-            dest_path = os.path.join(temp_dir, f"{forced_root}{ext}")
-            shutil.copy2(exported_texture_path, dest_path)
-            return dest_path, None
-        except Exception as e:
-            return None, f"Failed to copy/rename: {e}"

@@ -1,51 +1,39 @@
 import glob
 import os
 import re
-import tempfile
 from functools import lru_cache
 from typing import Any, Dict, Tuple
 
-from .pbr_maps import TOGGLE_KEYS
 from .plugin_info import PLUGIN_ID
 
 DEFAULT_REMIX_API_BASE_URL = "http://localhost:8011"
-SETTINGS_VERSION = 3
+SETTINGS_VERSION = 5
 
 TEXTURE_RESOLUTIONS = (512, 1024, 2048, 4096)
 NORMAL_MAP_FORMATS = ("opengl", "directx")
-EXPORT_FORMATS = ("png", "tga")
 POLL_TIMEOUT_RANGE = (0.5, 300.0)
 
 # Keys that older versions wrote but no longer mean anything.
 _RETIRED_KEYS = (
     # AperturePBR has no opacity texture input; opacity rides in the albedo alpha.
     "include_opacity_map",
-)
-
-# Workflow settings a preset stores. Machine-specific values (Remix address,
-# tool and export paths, log level) stay out so presets can be shared.
-PRESET_KEYS = (
-    "use_simple_tiling_mesh_on_pull",
-    "simple_tiling_mesh_path",
-    "painter_import_template_path",
-    "auto_import_textures_on_pull",
-    "project_texture_resolution",
-    "normal_map_format",
-    "auto_unwrap_with_blender_on_pull",
-    "blender_smart_uv_angle_limit",
-    "blender_smart_uv_area_weight",
-    "blender_smart_uv_island_margin",
-    "blender_smart_uv_stretch_to_bounds",
-    "export_file_format",
-    "restore_original_aspect_ratio_on_export",
-    "remix_output_subfolder",
+    # 1.0.0 had named presets; settings now simply autosave.
+    "active_preset",
+    # 1.0.0 per-map switches. Painter's channels decide what is pushed, and Remix's
+    # material decides what it uses (emission, alpha state, displacement).
     "texture_maps",
+    # Shader choice belongs to Painter's Shader Settings; Pull applies the preview
+    # shader only with the default template.
+    "use_remix_preview_shader",
+    # Intermediate export files: always PNG (lossless, with alpha) in a temp folder.
+    "export_file_format",
+    "painter_export_path",
 )
 
 
 def user_config_dir() -> str:
-    """Where settings and presets live: outside the plugin folder, so
-    reinstalling or updating the plugin keeps them."""
+    """Where settings live: outside the plugin folder, so reinstalling or
+    updating the plugin keeps them."""
     base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
     return os.path.join(base, PLUGIN_ID)
 
@@ -112,18 +100,12 @@ def default_settings(plugin_dir: str) -> Dict[str, Any]:
         "blender_smart_uv_area_weight": 0.0,
         "blender_smart_uv_island_margin": 0.003,
         "blender_smart_uv_stretch_to_bounds": False,
-        # --- Push/Export ---
-        "painter_export_path": os.path.join(tempfile.gettempdir(), "RemixConnector_Export"),
-        "export_file_format": "png",
+        # --- Push ---
         "restore_original_aspect_ratio_on_export": True,
         # --- Remix output ---
         "remix_output_subfolder": "Textures/PainterConnector_Ingested",
-        # --- Texture maps (push + import) ---
-        "texture_maps": {key: True for key in TOGGLE_KEYS},
         # --- Tools ---
         "texconv_path": _detect_texconv_path(plugin_dir),
-        # --- Presets ---
-        "active_preset": "",
         # --- Internal / reserved ---
         "plugin_id": PLUGIN_ID,
     }
@@ -208,17 +190,9 @@ def sanitize_settings(settings: Dict[str, Any], plugin_dir: str) -> Dict[str, An
     merged["blender_smart_uv_island_margin"] = _coerce_float(merged.get("blender_smart_uv_island_margin"), 0.003)
     merged["blender_smart_uv_stretch_to_bounds"] = _coerce_bool(merged.get("blender_smart_uv_stretch_to_bounds"), False)
 
-    merged["painter_export_path"] = _coerce_str(merged.get("painter_export_path"), os.path.join(tempfile.gettempdir(), "RemixConnector_Export"))
-    # Lossless formats only: JPEG has no alpha (where opacity rides) and adds artifacts before DDS compression.
-    merged["export_file_format"] = _coerce_str(merged.get("export_file_format"), "png").strip().lower() or "png"
-    if merged["export_file_format"] not in EXPORT_FORMATS:
-        merged["export_file_format"] = "png"
-
     merged["restore_original_aspect_ratio_on_export"] = _coerce_bool(merged.get("restore_original_aspect_ratio_on_export"), True)
 
     merged["remix_output_subfolder"] = _coerce_str(merged.get("remix_output_subfolder"), "Textures/PainterConnector_Ingested").strip() or "Textures/PainterConnector_Ingested"
-    merged["texture_maps"] = sanitize_texture_maps(merged.get("texture_maps"))
-    merged["active_preset"] = _coerce_str(merged.get("active_preset"), "").strip()
 
     # texconv: if empty/invalid, try local copy
     texconv = _coerce_str(merged.get("texconv_path"), "").strip()
@@ -231,25 +205,6 @@ def sanitize_settings(settings: Dict[str, Any], plugin_dir: str) -> Dict[str, An
     merged["settings_version"] = SETTINGS_VERSION
     merged["plugin_id"] = PLUGIN_ID
     return merged
-
-
-def sanitize_texture_maps(value: Any) -> Dict[str, bool]:
-    """Every toggleable map with a bool; unknown keys are dropped, missing ones on."""
-    value = value if isinstance(value, dict) else {}
-    return {key: _coerce_bool(value.get(key), True) for key in TOGGLE_KEYS}
-
-
-def enabled_maps(settings: Dict[str, Any]) -> set:
-    """Map keys switched on in Settings > Texture Maps."""
-    return {k for k, on in sanitize_texture_maps((settings or {}).get("texture_maps")).items() if on}
-
-
-def preset_values(settings: Dict[str, Any]) -> Dict[str, Any]:
-    """The part of ``settings`` a preset stores (deep-copied where needed)."""
-    values = {k: settings[k] for k in PRESET_KEYS if k in settings}
-    if isinstance(values.get("texture_maps"), dict):
-        values["texture_maps"] = dict(values["texture_maps"])
-    return values
 
 
 def atomic_write_json(path: str, data: Dict[str, Any]) -> Tuple[bool, str]:

@@ -161,29 +161,18 @@ class TestSettingsSchema(unittest.TestCase):
         finally:
             settings_schema._detect_blender_path.cache_clear()
 
-    def test_texture_maps_are_complete_bools(self):
-        maps = sanitize_settings({"texture_maps": {"anisotropy": "false", "opacity": 0, "bogus": True}}, "dummy_dir")["texture_maps"]
-        self.assertEqual(set(maps), set(settings_schema.TOGGLE_KEYS))
-        self.assertFalse(maps["anisotropy"])
-        self.assertFalse(maps["opacity"])
-        self.assertTrue(maps["thickness"])  # missing keys default to on
-        self.assertEqual(settings_schema.enabled_maps({"texture_maps": {"albedo": False}}),
-                         set(settings_schema.TOGGLE_KEYS) - {"albedo"})
-        # Settings from before the maps existed still push everything.
-        self.assertEqual(settings_schema.enabled_maps({}), set(settings_schema.TOGGLE_KEYS))
-
     def test_poll_timeout_is_clamped(self):
         self.assertEqual(sanitize_settings({"poll_timeout": 0}, "dummy_dir")["poll_timeout"], 0.5)
         self.assertEqual(sanitize_settings({"poll_timeout": "9999"}, "dummy_dir")["poll_timeout"], 300.0)
 
-    def test_preset_values_exclude_machine_paths(self):
-        settings = sanitize_settings({"api_base_url": "http://x:1", "normal_map_format": "directx"}, "dummy_dir")
-        values = settings_schema.preset_values(settings)
-        self.assertEqual(values["normal_map_format"], "directx")
-        for key in ("api_base_url", "texconv_path", "blender_executable_path", "painter_export_path", "log_level"):
-            self.assertNotIn(key, values)
-        values["texture_maps"]["albedo"] = False  # a copy, not the live settings
-        self.assertTrue(settings["texture_maps"]["albedo"])
+    def test_retired_keys_are_dropped(self):
+        # Presets (1.0.0), per-map switches, the shader checkbox and the export
+        # format/folder are gone; Painter and Remix already control those.
+        retired = {"active_preset": "Old", "texture_maps": {"height": False}, "use_remix_preview_shader": False,
+                   "export_file_format": "tga", "painter_export_path": "C:/exp"}
+        sanitized = sanitize_settings(dict(retired, normal_map_format="directx"), "dummy_dir")
+        self.assertFalse(set(retired) & set(sanitized))
+        self.assertEqual(sanitized["normal_map_format"], "directx")
 
     def test_user_config_dir_is_outside_the_plugin(self):
         with patch.dict(os.environ, {"APPDATA": r"C:\Users\me\AppData\Roaming"}):
